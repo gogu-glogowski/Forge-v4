@@ -63,22 +63,44 @@ Gateway bez dongle: wolno startować, Tor nie wyjdzie. Forge **nie** dokłada NA
 | **SIFT** | OVA SANS [SIFT Workstation](https://www.sans.org/tools/sift-workstation) | hash z oficjalnej strony SANS (konto SANS może być wymagane — bez luster) | OVA → qcow2, **wycinać NIC** |
 | **Whonix** | oficjalny pakiet libvirt/KVM, jeden bundle na parę | OpenPGP, klucz `916B8D99C38EAF5E8ADC7A2A8D66066A2EEACCDA` | dwa qcow2 (gw, ws) |
 
-Raz przy `pull`: pobranie, podpis/suma, zapis digestu w stanie Forge. **Nie** hashowanie całego obrazu przy każdym `start`. `create` sprawdza, że plik nadal ma zapisany digest.
-
 Poza listą nic: zero gościa Fedora, Debian, Ubuntu, Windows, drugiej Tsurugi „pod OSINT”.
 
 Tsurugi Acquire (live USB) nie jest profilem Forge.
 
----
+### Baza vs nakładka — to jest „sprawdzenie”, nie demon
 
-## 4. CLI — warstwa przyjazna i deweloperska
+**Nie** ma procesu w tle, który co chwilę haszuje qcow2.
 
-Prefiks `vm` z v2 znika. Jedna binarka `forge`.
+Żywy dysk VM **musi** się zmieniać (Ty w Tsurugi, `apt` w Kali). Hash całego pliku po tygodniu pracy zawsze „nie wyjdzie”. Albo ignorujesz alarm (architektura bez wartości), albo boisz się własnych zmian. Oba złe.
 
-### Przyjazne (README, realne użycie)
+Zamiast tego dwa pliki na profil:
 
 ```text
-forge pull <profil>              # Kali|tsurugi|sift|whonix
+pull →  base-<profil>.qcow2     tylko do odczytu, digest zapisany raz
+create →  <vm>.qcow2            nakładka (overlay), tu jest Twoja praca
+```
+
+Co się sprawdza, **kiedy** (przy komendzie, nie w tle):
+
+| Kiedy | Co | Po co |
+|-------|-----|--------|
+| `pull` | podpis/suma **upstreamu**, potem digest **bazy** | czy ściągnęliśmy to, co wydawca podpisał |
+| `create` / `start` | digest **bazy** nadal się zgadza; nakładka wskazuje na tę bazę | czy ktoś podmienił kanon pod spodem |
+| `start` / `status` | XML vs **rola** (NIC, dongle B exclusive, isolated bez karty) | czy po cichu nie wrócił `virbr0` / druga karta — to jest prawdziwe „zapomniałem, że zmieniłem” |
+| nigdy | hash nakładki `<vm>.qcow2` | to Twoje dane, nie pieczęć |
+
+Brak daemona = mniej powierzchni, host śledczy zostaje cichy. `status` i `start` są strażnikiem. Jeśli baza się nie zgadza — **odmowa startu**, nie żółta naklejka.
+
+---
+
+## 4. CLI — od pierwszej linijki dwa tryby
+
+Jedna binarka. **`forge` bez argumentów i `--help` pokazuje tylko tryb użytkownika.** Reszta schowana pod `forge dev`.
+
+### `user` (friendly) — to jest produkt
+
+```text
+forge pull <profil>
 forge create <profil> [nazwa]
 forge clone <vm> <nowa-nazwa>
 forge start <vm>
@@ -110,14 +132,20 @@ whonix     ready          whonix-gateway, whonix-workstation
 
 Jedna tablica. Osobne `profile list` / `image list` nie wracają.
 
-**`delete`** — fail-closed, tylko to co Forge udowodni że jest jego. Baza qcow2 z `pull` zostaje.
+**`delete`** — fail-closed, tylko to co Forge udowodni że jest jego. **Baza** z `pull` zostaje.
 
-### Deweloperskie (zostają, bo mają robotę)
+### `developer` — `forge dev …`
 
-| Komenda | Po co |
-|---------|--------|
-| `forge doctor` | Czy Fedora 44, KVM, `libvirtd`, `qemu:///system`, grupa libvirt, czy nasze domeny nie siedzą na `default` NAT |
-| `create`/`delete --dry-run` | Dla nas, nie ścieżka z README |
+Nie mieszają się w `--help`. Ścieżka dla nas i diagnostyki:
+
+```text
+forge dev doctor          # Fedora 44, KVM, libvirtd, URI, brak NAT na naszych domenach
+forge dev xml <vm>        # zrzut XML (rola vs rzeczywistość)
+forge dev create --dry-run …
+forge dev delete --dry-run …
+```
+
+`doctor` **nie** jest komendą z README dla gościa. Po instalacji: `forge dev doctor`. Jeśli kiedyś recovery wróci — tylko tutaj, nie jako trzeci workflow.
 
 ### Do kosza (v2, przerost)
 
@@ -151,7 +179,7 @@ Doctor odmawia, gdy URI to session, gdy brak KVM, gdy Fedora < 44.
 
 ```text
 Fedora 44 świeża
-  → A wpięte: dnf, @virtualization, rust, Forge, forge doctor, forge pull …
+  → A wpięte: dnf, @virtualization, rust, Forge, forge dev doctor, forge pull …
   → A wyjęte
   → sprawy: B w Gateway albo w Kali, isolated bez kabla
   → serwis: VM off, A z powrotem, dnf, A wyjęte

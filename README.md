@@ -57,21 +57,25 @@ cargo build --release -p forge-cli
 mkdir -p ~/.local/bin
 install -m 755 target/release/forge ~/.local/bin/forge
 command -v forge
-forge doctor
+forge dev doctor
 ```
 
-If `doctor` is not green, stop. It does not silently fix the host.
+If `forge dev doctor` is not green, stop. It does not silently fix the host.
+
+`forge --help` shows **user** commands only. Diagnostics live under `forge dev`.
 
 ---
 
-## Everyday commands
+## User commands
 
-No `vm plan`. No `image inspect` / `image fetch`. No `profile list` + `image list` as two rituals.
+No `vm plan`. No `image inspect` / `image fetch`. No background hash daemon.
+
+Each VM is an **overlay** on a hashed **base**. Your work changes the overlay; that is not an alarm. `start`/`status` re-check the base digest and the **role** (NICs, dongle). They do not hash the overlay.
 
 ```bash
-forge pull kali          # download official qcow2 + verify (HTTPS + signed checksum)
-forge create kali        # VM named kali, role osint-clearnet
-forge start kali
+forge pull kali          # download + verify upstream → immutable base qcow2
+forge create kali        # overlay VM named kali, role osint-clearnet
+forge start kali         # refuses if base digest or role XML drifted
 forge status kali        # running + role/network proof
 forge stop kali
 forge clone kali kali-2  # clone by VM name, not by file
@@ -93,20 +97,22 @@ forge start whonix-workstation
 
 ---
 
-## Developer commands
+## Developer mode
 
-Kept because they earn their place:
+Not in default `--help`:
 
-| Command | Why |
-|---------|-----|
-| `forge doctor` | Host really fits Forge (Fedora 44, KVM, libvirtd, URI, no default NAT on our domains) |
-| `forge delete <name>` | Fail-closed remove of an owned VM (needed in real use too) |
+```bash
+forge dev doctor           # host fit (Fedora 44, KVM, libvirtd, no NAT on our domains)
+forge dev xml <vm>         # domain XML vs role
+forge dev create --dry-run …
+forge dev delete --dry-run …
+```
+
+`forge delete` itself is a **user** command (you need it). `--dry-run` is `dev`.
 
 Dropped from v2 (overgrowth, not 4.0):
 
-`vm plan`, `vm create --dry-run` as the happy path, `image inspect`, `image fetch`, `image prepare*`, Fedora Workstation **guest**, `fresh`, `adopt`, `rebuild`, `state recover` as daily tools, `profile list` / `image list` as a pair.
-
-`--dry-run` may exist on `create` / `delete` for us. It is not in the README workflow.
+`vm plan`, `image inspect`, `image fetch`, `image prepare*`, Fedora Workstation **guest**, `fresh`, `adopt`, `rebuild`, `state recover` as daily tools, `profile list` / `image list` as a pair, a background image-hash daemon.
 
 ---
 
