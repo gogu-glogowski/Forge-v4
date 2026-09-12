@@ -1,198 +1,179 @@
 # Forge 4.0 — architektura
 
-Stan: **tylko ten dokument**. Brak silnika, CLI i GUI.
+Stan: **dokument**. Brak silnika.
 
-To nie jest przepisanie 2.5 ani 3.0. Nowy produkt, te same zasady fail-closed (własność, provenance obrazów, brak zgadywania). Inny **model sieci**.
-
----
-
-## 1. Po co
-
-Laptop-lab na **Fedorze**: hypervisor nic nie śledzi. Goście mają **role**, nie „internet z NAT-u, bo tak libvirt stawia `virbr0`”.
-
-Operator ma dwa fizyczne wyjścia na świat, **różni dostawcy**:
-
-1. **Zwykły port Ethernet** (wbudowany) — internet A.
-2. **Dongle USB-C → Ethernet** — internet B.
-
-Forge 4.0 nie robi z Fedory mini-routera. Albo cisza, albo **prawdziwy** kabel w **jednej** VM.
+Nie przepisujemy 2.5/3.0. Bierzemy stamtąd: fail-closed, podpisane obrazy, para Whonix bez uplinku na Workstation. **Nie bierzemy:** lasu komend z README v2 (`plan` / `inspect` / `fetch` / `prepare`), gościa Fedora Workstation, NAT-u hosta dla VM.
 
 ---
 
-## 2. Role (kontrakt)
+## 1. Dwa kable, człowiek wkłada i wyjmuje
 
-Pięć ról. Profil bez roli nie istnieje. Rola nie jest „opcją sieci w kreatorze” — jest tożsamością domeny.
+| | Dostawca | Sprzęt | Kto |
+|--|----------|--------|-----|
+| **A** | internet hosta | wbudowany Ethernet | **tylko Fedora** |
+| **B** | inny internet | USB-C → Ethernet (domyślnie) albo USB Wi‑Fi | **tylko VM**, passthrough |
 
-### `isolated`
+A i B to nie automat. Operator **podpina albo wypina**.
 
-Brak karty sieciowej. Zero `<interface>`, zero USB-net.
+- **A wpięte:** okno serwisowe. VM wyłączone (albo przynajmniej bez dongle). `dnf`, instalacja libvirt/Rust/Forge, `forge pull`.
+- **A wyjęte:** tryb sprawy. Host bez default route na świat.
+- **B wpięte:** passthrough do **jednej** VM, która w tej chwili ma prawo do internetu: `whonix-gw` **albo** `kali`, nigdy obie, nigdy Tsurugi/SIFT/Workstation.
+- **B wyjęte:** żadna VM nie ma świata. Isolated i tak nigdy nie ma.
 
-**Profile:** Tsurugi LAB, SIFT Workstation.
+Kabel łatwiejszy niż Wi‑Fi: mniej sond SSID, mniej obcych AP. USB Wi‑Fi jest **tym samym slotem B**, nie trzecim internetem.
 
-Co tam robisz: kopia dysku, Autopsy, Volatility. Nie Facebook. Nie `dnf` gościa przez sieć.
-
-### `whonix-ws`
-
-Jedna karta: **tylko** do Gateway (sieć libvirt `forge-whonix`, `forward=none`).
-
-Zakaz: NAT, `type='user'`, passt, most, USB hostdev, druga NIC.
-
-### `whonix-gw`
-
-Dwie rzeczy, nic więcej:
-
-1. Ta sama sieć `forge-whonix` (do Workstation).
-2. **Wyłącznie USB passthrough** dongle USB-C→Ethernet (dostawca B).
-
-Zakaz: `virbr0`, `network=default`, `<interface type='user'>`, passt, most wbudowanego Ethernetu hosta.
-
-Bez wetkniętego dongle Gateway **wolno** wystartować — Tor po prostu nie ma wyjścia. Forge nie dokłada zastępczego NAT-u „żeby działało”.
-
-### `osint-clearnet`
-
-Jedna karta: **passthrough zwykłego portu Ethernet** (dostawca A). Inny internet niż dongle.
-
-**Profil:** Kali.
-
-Zakaz: dongle USB-C, sieć `forge-whonix`, NAT hosta. Host w tym czasie **nie** ma adresu na tym porcie.
-
-### Host `maintenance` (to nie jest VM)
-
-Goście **wyłączeni**. Dongle **nie** jest w Gateway. Wbudowany Ethernet **w hoście** (nie w Kali).
-
-Wtedy i tylko wtedy: aktualizacje Fedory, instalacja KVM/libvirt, instalacja Forge, paczki hypervisoru.
-
-Potem: odciąć internet hosta (wyjąć kabel / `nmcli down`). Wrócić do trybu sprawy.
-
----
-
-## 3. Profile — zamknięta lista
-
-Nic poza tym. Debian/Ubuntu/Fedora-gość, druga Tsurugi „pod OSINT”, Windows — poza 4.0.
-
-| Profil | Rola | Co ściąga Forge (gdy powstanie silnik) |
-|--------|------|----------------------------------------|
-| **Tsurugi LAB** | `isolated` | Oficjalne **OVA** z [tsurugi-linux.org/downloads](https://tsurugi-linux.org/downloads.php). Weryfikacja: SHA512 + podpis, klucz projektu **0x116AD57C**. Import do qcow2, **wycinać wszystkie NIC** z XML. Live USB Acquire **nie** jest gościem Forge (pendrive w torbie). |
-| **SIFT** | `isolated` | Oficjalne **OVA** SANS [SIFT Workstation](https://www.sans.org/tools/sift-workstation). Hash z strony SANS. Import, **wycinać NIC**. Konto SANS może być wymagane do pobrania — to ograniczenie upstreamu, nie omijamy go mirrorami. |
-| **Kali** | `osint-clearnet` | Oficjalny obraz QEMU z `cdimage.kali.org` (`*-qemu-amd64`), `SHA256SUMS` + `.gpg`, klucz **827C8569F2518CC677FECA1AED65462EC8D5E4C5** (jak 3.0). Jedna NIC: hostdev wbudowanego Ethernetu, nie `user`/`default`. |
-| **Whonix Gateway** | `whonix-gw` | Oficjalny pakiet **libvirt/KVM** Whonix, podpis OpenPGP, klucz **916B8D99C38EAF5E8ADC7A2A8D66066A2EEACCDA** (jak 2.5/3.0). Jeden bundle → Gateway i Workstation. |
-| **Whonix Workstation** | `whonix-ws` | Ten sam bundle. |
-
-Jedna para Whonix (jeden Gateway, jeden Workstation). Start: Gateway, potem Workstation. Stop: odwrotnie.
-
-Tsurugi ma w Distro przełącznik OSINT — **w Forge 4.0 go nie używasz**. OSINT clearnet = Kali. OSINT Tor = Whonix Workstation.
-
----
-
-## 4. Fizyczne kable
+Host **nigdy** nie NATuje gości (`virbr0` / `type='user'` / passt). Gość albo ślepy, albo trzyma **ten** dongle.
 
 ```text
-ISP A  ── wbudowany Ethernet ──┬── HOST          tylko okno maintenance
-                               └── Kali          passthrough, gdy host nie używa portu
-                                                 (osint-clearnet)
+ISP A ── wbudowany Ethernet ── tylko HOST (maintenance / pull)
+                                 potem wyjmij
 
-ISP B  ── USB-C dongle Ethernet ──── Whonix Gateway     tylko to
-                                      │
-                                      └── forge-whonix (isolated) ── Whonix Workstation
+ISP B ── USB dongle ──┬── Whonix Gateway     (gdy Tor)
+                      └── Kali               (gdy clearnet OSINT)
+                      (człowiek przekłada; status krzyczy gdy oba)
 
-Tsurugi     ── (brak kabla)
-SIFT        ── (brak kabla)
+Tsurugi / SIFT / Whonix Workstation ── brak B, brak A
 ```
 
-Zasady:
+---
 
-- Jeden fizyczny NIC w **co najwyżej jednym** miejscu naraz (host **albo** jedna VM).
-- Dongle nigdy w Kali, Workstation, Tsurugi, SIFT, hoście (poza przypadkiem, gdy Gateway jest off i operator świadomie serwisuje dongle — to nie jest tryb Forge).
-- Wbudowany port nigdy w Gateway.
-- Dwa dostawcy są **cechą**, nie przypadek: Tor i clearnet nie wychodzą tą samą firmą.
+## 2. Role (bez zmian poza kablem B)
 
-Passthrough = USB (dongle) albo PCI/USB hostdev wbudowanej karty, jeśli płyta tak daje. Forge nie emuluje karty i nie NATuje. Gość widzi **ten** sprzęt.
+| Rola | NIC | Profile |
+|------|-----|---------|
+| `isolated` | brak | Tsurugi, SIFT |
+| `whonix-ws` | tylko `forge-whonix` (`forward=none`) | Whonix Workstation |
+| `whonix-gw` | `forge-whonix` + **wyłącznie** USB hostdev **B** | Whonix Gateway |
+| `osint-clearnet` | **wyłącznie** USB hostdev **B** | Kali |
+
+Gateway bez dongle: wolno startować, Tor nie wyjdzie. Forge **nie** dokłada NAT-u.
+
+`status` jest strażnikiem roli: zła karta, `network=default`, dongle w dwóch domenach, isolated z NIC → błąd, nie ostrzeżenie.
 
 ---
 
-## 5. Libvirt (gdy powstanie silnik)
+## 3. Obrazy: na dysku zawsze qcow2
 
-| | Forge 3.0 | Forge 4.0 |
-|--|-----------|-----------|
-| URI | `qemu:///session` (łatwe na Arch) | **`qemu:///system`** (Fedora; USB hostdev, prawdziwa sieć isolated) |
-| NAT Kali | `type='user'` | **zakaz** |
-| Uplink Gateway | `user` + passt | **tylko USB hostdev** |
-| Link GW↔WS | UDP localhost 6688/5577 | sieć libvirt **`forge-whonix`**, `forward='none'`, bez DHCP na świat, bez `virbr0` |
-| Isolated | nie było | brak `<interface>` |
+Ściąganie może być OVA/7z. Po `pull` kanon to **qcow2** (jedna baza na profil). Create/clone operują na nazwie VM i na tym qcow2, nie na pliku, który operator wskazuje ręcznie.
 
-`qemu:///session` nie jest URI labu śledczego: nie odda USB hostowi porządnie i pcha w `type='user'`.
+| Profil | Upstream | Weryfikacja (sensowna, nie NASA) | Wynik `pull` |
+|--------|----------|-----------------------------------|--------------|
+| **Kali** | `cdimage.kali.org` obraz QEMU `*-qemu-amd64` | HTTPS + `SHA256SUMS` + `.gpg`, klucz `827C8569F2518CC677FECA1AED65462EC8D5E4C5` | qcow2 |
+| **Tsurugi LAB** | OVA z [tsurugi-linux.org/downloads](https://tsurugi-linux.org/downloads.php) | SHA512 + podpis, klucz **0x116AD57C** | konwersja OVA → qcow2, **wycinać NIC** |
+| **SIFT** | OVA SANS [SIFT Workstation](https://www.sans.org/tools/sift-workstation) | hash z oficjalnej strony SANS (konto SANS może być wymagane — bez luster) | OVA → qcow2, **wycinać NIC** |
+| **Whonix** | oficjalny pakiet libvirt/KVM, jeden bundle na parę | OpenPGP, klucz `916B8D99C38EAF5E8ADC7A2A8D66066A2EEACCDA` | dwa qcow2 (gw, ws) |
 
-Doctor (przyszły) odmawia startu, gdy:
+Raz przy `pull`: pobranie, podpis/suma, zapis digestu w stanie Forge. **Nie** hashowanie całego obrazu przy każdym `start`. `create` sprawdza, że plik nadal ma zapisany digest.
 
-- domena Forge ma `network=default` / `type='user'` / passt uplink,
-- `isolated` ma jakąkolwiek NIC,
-- `whonix-ws` ma cokolwiek poza `forge-whonix`,
-- `whonix-gw` ma uplink inny niż uzgodniony USB hostdev,
-- ten sam hostdev jest w dwóch domenach,
-- host ma IPv4/IPv6 na NIC, który jest jednocześnie w gościu.
+Poza listą nic: zero gościa Fedora, Debian, Ubuntu, Windows, drugiej Tsurugi „pod OSINT”.
+
+Tsurugi Acquire (live USB) nie jest profilem Forge.
 
 ---
 
-## 6. Host Fedora — cykl życia
+## 4. CLI — warstwa przyjazna i deweloperska
 
-Jedna świeża Fedora. Mało paczek: KVM, libvirt, virt-viewer, Forge (gdy będzie). LUKS. SELinux zostaje.
+Prefiks `vm` z v2 znika. Jedna binarka `forge`.
+
+### Przyjazne (README, realne użycie)
 
 ```text
-[instalacja OS + virt + Forge]   ← wbudowany Ethernet, gości jeszcze nie ma
-        ↓
-[ściągnięcie i weryfikacja obrazów]  ← ten sam kabel, wciąż maintenance
-        ↓
-[odcięcie internetu hosta]
-        ↓
-[tryb sprawy]
-   isolated = Tsurugi / SIFT
-   dongle w Gateway tylko gdy Tor
-   wbudowany port w Kali tylko gdy clearnet
-        ↓
-[okno serwisowe]
-   wszystkie VM off
-   kabel z powrotem w hosta
-   dnf update (+ ewentualnie nowe obrazy)
-   odciąć znowu
+forge pull <profil>              # Kali|tsurugi|sift|whonix
+forge create <profil> [nazwa]
+forge clone <vm> <nowa-nazwa>
+forge start <vm>
+forge stop <vm>
+forge status [vm]
+forge list
+forge delete <vm>
 ```
 
-Aktualizacje przy wyłączonych VM są **warunkiem**, nie tarczą. Łatają hypervisor. W oknie serwisowym host nie jest przeglądarką OSINT.
+**`pull`** — jedyna komenda pobrania. Zastępuje `image inspect` + `image fetch`. Kryptografia jak w tabeli wyżej.
 
-Obrazy gości aktualizujesz **nową zweryfikowaną bazą**, nie `apt` w środku sprawy na Tsurugi z doklejonym NAT-em.
+**`create kali`** — VM o nazwie `kali` (albo `create kali kali-2`). Rola z profilu, nie z flagi. `create tsurugi`, `create sift` analogicznie. **`create whonix`** stawia **parę** (`whonix-gateway` + `whonix-workstation`), nie dwie zgadywane komendy.
+
+**`clone`** — źródło to **nazwa VM**, nie ścieżka qcow2. `clone kali kali-2`. Whonix: **odmowa** (jedna para; klon pary to nie 4.0).
+
+**`stop`** — ACPI. `stop --force` to osobne ucięcie zasilania (jak v2, bez cichej eskalacji).
+
+**`status`** — czy domena żyje **oraz** czy XML zgadza się z rolą (NIC, dongle, `forge-whonix`). Bez nazwy: cały lab.
+
+**`list`** — **propozycja zamiast** `profile list` + `image list`:
+
+```text
+profile    image          vms
+kali       ready          kali, kali-2
+tsurugi    missing        —
+sift       ready          sift
+whonix     ready          whonix-gateway, whonix-workstation
+```
+
+Jedna tablica. Osobne `profile list` / `image list` nie wracają.
+
+**`delete`** — fail-closed, tylko to co Forge udowodni że jest jego. Baza qcow2 z `pull` zostaje.
+
+### Deweloperskie (zostają, bo mają robotę)
+
+| Komenda | Po co |
+|---------|--------|
+| `forge doctor` | Czy Fedora 44, KVM, `libvirtd`, `qemu:///system`, grupa libvirt, czy nasze domeny nie siedzą na `default` NAT |
+| `create`/`delete --dry-run` | Dla nas, nie ścieżka z README |
+
+### Do kosza (v2, przerost)
+
+- `forge vm plan`
+- `forge image inspect` / `forge image fetch` (jest `pull`)
+- `forge image prepare` / `prepare-start` / `prepare-promote` / cały gość **Fedora Workstation**
+- `forge vm create <profil> <instancja>` jako trzyetapowy rytuał z `--dry-run` obowiązkowym
+- `forge vm fresh`
+- `forge state adopt` / `rebuild` / `recover` jako codzienność
+- `forge profile list` + `forge image list` jako para
+- Disposable, GME, QGA, SSH do gościa, cloud-init
+
+Jeśli kiedyś recovery będzie musiało wrócić, to pod `doctor`, nie jako trzeci workflow.
 
 ---
 
-## 7. Fail-closed (z 2.5/3.0, bez regresji)
+## 5. Libvirt
 
-- Provenance: obrazy tylko z oficjalnych drzew + podpis/hash jak w tabeli profili. Brak podpisu = brak instalacji.
-- Własność: kasowanie domeny tylko przy zgodności UUID + metadata Forge + ścieżka dysku.
-- Brak guest-exec, SSH, QGA, cloud-init jako kanału sterowania.
-- Wyświetlacz: zewnętrzny `virt-viewer` / `remote-viewer`, nie osadzony pulpit w Forge.
-- Cache obrazów `~/.local/share/forge/cache/` (albo `$FORGE_DATA_DIR`); skasowanie VM nie kasuje cache.
-- Przerwana operacja → stan recovery, nie „udane, bo XML jest”.
+- URI: **`qemu:///system`**
+- Sieć `forge-whonix`: `forward='none'`, tylko GW↔WS
+- Hostdev USB: jeden dongle B, exclusive
+- Storage: qcow2 pod kontrolą Forge (`$FORGE_DATA_DIR` albo `~/.local/share/forge/`)
+- Display: `virt-viewer` / virt-manager, nie osadzony GUI w tym cutcie
+- Start Whonix: najpierw Gateway, potem Workstation; stop odwrotnie (`start`/`stop` na parze może to wymusić później; na razie dokumentowane)
 
-Świadomie **nie** przenosimy z 3.0: user-mode NAT, passt na Gateway, `qemu:///session` jako default.
-
----
-
-## 8. Świadomie poza 4.0
-
-- RAID, LVM spanning, druga Tsurugi online.
-- Most hosta (`virbr0`) „dla wygody”.
-- Whonix Workstation z Wi‑Fi / drugim dongle.
-- Tails jako profil (pendrive, nie libvirt).
-- Qubes.
-- Windows / Cellebrite — inny stos, nie Forge.
-- MNP — osobny projekt; tu nie ma gościa MNP.
+Doctor odmawia, gdy URI to session, gdy brak KVM, gdy Fedora < 44.
 
 ---
 
-## 9. Ten cut vs następny
+## 6. Host — cykl
 
-| Ten commit | Później |
-|------------|---------|
-| To repo, ten plik, README, Apache-2.0 | `forge-core` + CLI na Fedorze |
-| Role i kable zamknięte | Doctor, import OVA, hostdev, sieć `forge-whonix` |
-| Brak kodu | Ściąganie: Whonix, Tsurugi, SIFT, Kali |
+```text
+Fedora 44 świeża
+  → A wpięte: dnf, @virtualization, rust, Forge, forge doctor, forge pull …
+  → A wyjęte
+  → sprawy: B w Gateway albo w Kali, isolated bez kabla
+  → serwis: VM off, A z powrotem, dnf, A wyjęte
+```
 
-Zmiana roli profilu (np. Kali → `isolated`) to zmiana kontraktu, nie flagi w GUI.
+`pull` wymaga A (albo innej chwilowej drogi hosta na świat). Nie ściągamy obrazów przez dongle B w gościu.
+
+---
+
+## 7. Fail-closed (z v2, bez NASA)
+
+Zostaje: dokładna własność (UUID + metadata + ścieżka), digest zapisany przy `pull`, kasowanie tylko udowodnionych zasobów, brak zgadywania po podobnej nazwie.
+
+Nie wraca: pełne przehashowanie obrazu na `start`, łańcuch SLSA, gość jako źródło prawdy, cichy rollback.
+
+---
+
+## 8. Ten cut
+
+| Jest | Nie ma |
+|------|--------|
+| Ten plik + README | kod Rust |
+| Role, kable A/B, qcow2, CLI | import OVA, hostdev, doctor w binariów |
+
+Następny commit z kodem: `doctor` + `pull` + `create` dla jednego profilu isolated — nie GUI.
