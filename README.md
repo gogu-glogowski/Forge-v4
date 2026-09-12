@@ -70,7 +70,7 @@ If `forge dev doctor` is not green, stop. It does not silently fix the host.
 
 No `vm plan`. No `image inspect` / `image fetch`. No background hash daemon.
 
-Each VM is an **overlay** on a hashed **base**. Your work changes the overlay; that is not an alarm. `start`/`status` re-check the base digest and the **role** (NICs, dongle). They do not hash the overlay.
+Each VM is an **overlay** on a hashed **base**. Bases are **not** libvirt domains, not in a virt-manager pool, and get `chattr +i` after `pull` — they must not appear as VMs and must not be started. Only overlays show up, start, clone, and delete. Your work changes the overlay; that is not an alarm. `start`/`status` re-check the base digest and the **role** (NICs, dongle). They do not hash the overlay.
 
 ```bash
 forge pull kali          # download + verify upstream → immutable base qcow2
