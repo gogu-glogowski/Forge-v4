@@ -1,0 +1,16 @@
+/target/
+debug
+**/*.rs.bk
+*.pdb
+**/mutants.out*/
+*.qcow2
+*.iso
+*.img
+*.raw
+*.ova
+*.vmdk
+*.qcow2.tmp
+*.iso.tmp
+.idea/
+*.swp
+*~
