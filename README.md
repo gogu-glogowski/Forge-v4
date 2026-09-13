@@ -2,7 +2,9 @@
 
 Fedora-first KVM/libvirt lab. Greenfield after [v2](https://github.com/gogu-glogowski/Forge-v2) and [v3](https://github.com/gogu-glogowski/Forge-v3) — we keep fail-closed ownership and signed images, not the command maze.
 
-**This cut is documentation only.** No engine yet. Contract: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Contract: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+**This engine cut:** `forge dev doctor` plus `forge pull tsurugi` / `forge create tsurugi` (role `isolated`). Kali, SIFT, and Whonix are in the catalog; pull/create refuse them until a later cut. Daily display is GNOME Boxes on `qemu:///system`; virt-manager is spare.
 
 Five guests, four roles. Nothing else.
 
@@ -29,11 +31,13 @@ Reboot if the kernel changed.
 **Virtualization + build deps:**
 
 ```bash
-sudo dnf install @virtualization virt-manager virt-viewer
+sudo dnf install @virtualization gnome-boxes virt-manager virt-viewer
 sudo dnf install git gcc rust cargo libvirt-devel
 sudo systemctl enable --now libvirtd
 sudo usermod -aG libvirt "$USER"
 ```
+
+Daily display is **GNOME Boxes** (rpm, not Flatpak). Point it once at `qemu:///system`. Do not create VMs from Boxes — that is session + NAT, not this lab. **virt-manager** is the spare (XML, USB dongle **B**).
 
 Log out and back in so the `libvirt` group applies.
 
@@ -70,7 +74,7 @@ If `forge dev doctor` is not green, stop. It does not silently fix the host.
 
 No `vm plan`. No `image inspect` / `image fetch`. No background hash daemon.
 
-Each VM is an **overlay** on a hashed **base**. Bases are **not** libvirt domains, not in a virt-manager pool, and get `chattr +i` after `pull` — they must not appear as VMs and must not be started. Only overlays show up, start, clone, and delete. Your work changes the overlay; that is not an alarm. `start`/`status` re-check the base digest and the **role** (NICs, dongle). They do not hash the overlay.
+Each VM is an **overlay** on a hashed **base**. Bases are **not** libvirt domains, not in a Boxes or virt-manager pool, and get `chattr +i` after `pull` — they must not appear as VMs and must not be started. Only overlays show up, start, clone, and delete. Your work changes the overlay; that is not an alarm. `start`/`status` re-check the base digest and the **role** (NICs, dongle). They do not hash the overlay.
 
 ```bash
 forge pull kali          # download + verify upstream → immutable base qcow2
@@ -102,7 +106,7 @@ forge start whonix-workstation
 Not in default `--help`:
 
 ```bash
-forge dev doctor           # host fit (Fedora 44, KVM, libvirtd, no NAT on our domains)
+forge dev doctor           # host fit (Fedora 44, KVM, libvirtd, Boxes rpm, no NAT on our domains)
 forge dev xml <vm>         # domain XML vs role
 forge dev create --dry-run …
 forge dev delete --dry-run …

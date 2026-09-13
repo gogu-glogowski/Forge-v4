@@ -1,6 +1,6 @@
 # Forge 4.0 — architektura
 
-Stan: **dokument**. Brak silnika.
+Stan: **pierwszy silnik**. `doctor` + `pull`/`create` dla Tsurugi (isolated). Kali / SIFT / Whonix — jeszcze nie.
 
 Nie przepisujemy 2.5/3.0. Bierzemy stamtąd: fail-closed, podpisane obrazy, para Whonix bez uplinku na Workstation. **Nie bierzemy:** lasu komend z README v2 (`plan` / `inspect` / `fetch` / `prepare`), gościa Fedora Workstation, NAT-u hosta dla VM.
 
@@ -80,17 +80,17 @@ pull   →  /var/lib/forge/bases/<profil>.qcow2     kanon, nie domena
 create →  overlay w puli Forge + domena libvirt   to jedyne, co widać i co się startuje
 ```
 
-### Bazy niewidoczne w virt-managerze
+### Bazy niewidoczne w Boxes i virt-managerze
 
-Virt-manager pokazuje **domeny** (lista VM) i **wolumeny w zdefiniowanych pulach**. Bazy chowamy oboma drzwiami:
+GNOME Boxes (codzienność) i virt-manager (zapas) pokazują **domeny** (lista VM) i **wolumeny w zdefiniowanych pulach**. Bazy chowamy oboma drzwiami:
 
 1. **Nigdy nie `define` domeny na bazie.** Nie ma XML, nie ma Start, nie ma klawisza Delete przy kanonie. `forge start` / `stop` / `delete` / `clone` działają wyłącznie na nazwie **nakładki**.
-2. **Bazy poza pulą libvirt.** Katalog `/var/lib/forge/bases/` **nie** jest `pool-define`. Virt-manager w Storage ich nie listuje. Nakładki siedzą w puli `forge-vms` (albo równoważnej) — to ma być widać.
+2. **Bazy poza pulą libvirt.** Katalog `/var/lib/forge/bases/` **nie** jest `pool-define`. Ani Boxes, ani virt-manager w Storage ich nie listują. Nakładki siedzą w puli `forge-vms` (albo równoważnej) — to ma być widać.
 3. Po `pull`: plik bazy `chmod 0440`, właściciel `root:qemu`, **`chattr +i`** (immutable). QEMU czyta backing file; przypadkowy zapis i „New VM from this disk” w GUI utrudnione. Kolejny `pull` tej samej bazy: `chattr -i` → podmiana po weryfikacji → znowu `+i`.
 4. XML gościa ma **jeden** dysk: nakładkę. Baza tylko jako `backing file` w qcow2, nie jako drugi `<disk>`.
 5. SELinux (Fedora): fcontext na `/var/lib/forge/bases(/.*)?` tak, żeby `svirt_t` **czytał** backing (typ jak `virt_content_t` / `svirt_image_t` — `doctor` to sprawdza). Bez tego overlay nie wstanie.
 
-To nie jest ukrycie przed `ls` jako root. Jest ukrycie przed codziennym virt-managerem: nie ma pozycji „Kali BASE”, nie da się jej odpalić z listy.
+To nie jest ukrycie przed `ls` jako root. Jest ukrycie przed codziennym GUI: w Boxes i w virt-managerze nie ma pozycji „Kali BASE”, nie da się jej odpalić z listy.
 
 `delete kali` kasuje domenę + nakładkę. **Bazy nie rusza.** `forge pull` jest jedyną legalną drogą do wymiany kanonu.
 
@@ -153,7 +153,7 @@ Jedna tablica. Osobne `profile list` / `image list` nie wracają.
 Nie mieszają się w `--help`. Ścieżka dla nas i diagnostyki:
 
 ```text
-forge dev doctor          # Fedora 44, KVM, libvirtd, URI, brak NAT na naszych domenach
+forge dev doctor          # Fedora 44, KVM, libvirtd, URI, Boxes (rpm), brak NAT na naszych domenach
 forge dev xml <vm>        # zrzut XML (rola vs rzeczywistość)
 forge dev create --dry-run …
 forge dev delete --dry-run …
@@ -182,10 +182,24 @@ Jeśli kiedyś recovery będzie musiało wrócić, to pod `doctor`, nie jako trz
 - Sieć `forge-whonix`: `forward='none'`, tylko GW↔WS
 - Hostdev USB: jeden dongle B, exclusive
 - Storage: qcow2 pod kontrolą Forge (`$FORGE_DATA_DIR` albo `~/.local/share/forge/`)
-- Display: `virt-viewer` / virt-manager, nie osadzony GUI w tym cutcie
 - Start Whonix: najpierw Gateway, potem Workstation; stop odwrotnie (`start`/`stop` na parze może to wymusić później; na razie dokumentowane)
 
-Doctor odmawia, gdy URI to session, gdy brak KVM, gdy Fedora < 44.
+### Frontend — Boxes codziennie, virt-manager zapas
+
+Forge **nie** osadza pulpitu gościa. Operator ogląda nakładkę w zewnętrznym GUI.
+
+| | Narzędzie | Kiedy |
+|--|-----------|--------|
+| **Domyślnie** | **GNOME Boxes** (`gnome-boxes` z dnf) | praca w gościu: otwórz, pracuj, zamknij |
+| **Zapas** | **virt-manager** (+ `virt-viewer`) | XML, hostdev USB dongle **B**, gdy Boxes nie widzi domeny albo nie podpina SPICE |
+
+Boxes **nie** jest fabryką VM. Kreator „New” w Boxes stawia `qemu:///session` i NAT — to nie lab Forge. Jedyna legalna droga do maszyny: `forge create`. `status` krzyczy, gdy w XML wróci `virbr0` / `type='user'`.
+
+Boxes musi mieć połączenie **`qemu:///system`** (raz: *Connect to a remote computer* / URI `qemu:///system`), nie własny session. Inaczej listy Forge nie zobaczy.
+
+**Nie Flatpak** `org.gnome.Boxes`: własny stack, nie widzi systemowych domen. `doctor` sprawdza rpm `gnome-boxes`. virt-manager zostaje w dnf jako zapas, nie jako codzienność.
+
+Doctor odmawia, gdy URI to session, gdy brak KVM, gdy Fedora < 44, gdy nie ma rpm Boxes.
 
 ---
 
@@ -193,10 +207,11 @@ Doctor odmawia, gdy URI to session, gdy brak KVM, gdy Fedora < 44.
 
 ```text
 Fedora 44 świeża
-  → A wpięte: dnf, @virtualization, rust, Forge, forge dev doctor, forge pull …
+  → A wpięte: dnf, @virtualization, gnome-boxes, virt-manager, rust, Forge, forge dev doctor, forge pull …
   → A wyjęte
-  → sprawy: B w Gateway albo w Kali, isolated bez kabla
+  → sprawy: Boxes na qemu:///system; B w Gateway albo w Kali, isolated bez kabla
   → serwis: VM off, A z powrotem, dnf, A wyjęte
+  → virt-manager tylko gdy Boxes nie wystarcza (USB B, XML)
 ```
 
 `pull` wymaga A (albo innej chwilowej drogi hosta na świat). Nie ściągamy obrazów przez dongle B w gościu.
@@ -215,7 +230,9 @@ Nie wraca: pełne przehashowanie obrazu na `start`, łańcuch SLSA, gość jako 
 
 | Jest | Nie ma |
 |------|--------|
-| Ten plik + README | kod Rust |
-| Role, kable A/B, qcow2, CLI | import OVA, hostdev, doctor w binariów |
+| Ten plik + README + `forge` (Rust) | GUI w Forge (jest Boxes) |
+| `forge dev doctor` | silent host repair |
+| `forge pull tsurugi` / `forge create tsurugi` | Kali, SIFT, Whonix pull/create |
+| Overlay + isolated XML (zero NIC) | hostdev USB w create (dongle B: virt-manager zapas) |
 
-Następny commit z kodem: `doctor` + `pull` + `create` dla jednego profilu isolated — nie GUI.
+Następny cut: `pull`/`create` Kali (osint-clearnet) albo para Whonix.

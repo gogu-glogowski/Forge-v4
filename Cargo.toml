@@ -1,0 +1,38 @@
+[workspace]
+members = ["crates/forge-core", "crates/forge-cli"]
+default-members = ["crates/forge-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+format_push_string = "allow"
+cast_precision_loss = "allow"
+struct_excessive_bools = "allow"
+unused_self = "allow"
+single_match_else = "allow"
+vec_init_then_push = "allow"
+case_sensitive_file_extension_comparisons = "allow"
+duration_suboptimal_units = "allow"
+collapsible_if = "allow"
+doc_markdown = "allow"
+map_unwrap_or = "allow"
+uninlined_format_args = "allow"
+trivially_copy_pass_by_ref = "allow"
+ref_option = "allow"
+unnecessary_wraps = "allow"
+redundant_closure_for_method_calls = "allow"
+items_after_statements = "allow"
+too_many_lines = "allow"

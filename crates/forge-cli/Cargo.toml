@@ -1,0 +1,17 @@
+[package]
+name = "forge-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Forge 4.0 CLI"
+
+[[bin]]
+name = "forge"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+forge-core = { path = "../forge-core" }
+
+[lints]
+workspace = true
