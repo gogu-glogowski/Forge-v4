@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::cmd::{self, command};
 use crate::error::{ForgeError, Result};
-use crate::profile::{FORGE_VMS_POOL, SYSTEM_URI};
+use crate::profile::{FORGE_VMS_POOL, SYSTEM_URI, WHONIX_NET};
 use crate::role::VmPower;
 
 pub fn uri() -> Result<String> {
@@ -94,6 +94,20 @@ pub fn dumpxml(uri: &str, domain: &str) -> Result<String> {
     virsh(uri, &["dumpxml", domain])
 }
 
+pub fn attach_device_live(uri: &str, domain: &str, xml: &str) -> Result<()> {
+    let tmp = tempfile_xml(xml)?;
+    let result = virsh(uri, &["attach-device", domain, &tmp, "--live"]);
+    let _ = fs::remove_file(&tmp);
+    result.map(|_| ())
+}
+
+pub fn detach_device_live(uri: &str, domain: &str, xml: &str) -> Result<()> {
+    let tmp = tempfile_xml(xml)?;
+    let result = virsh(uri, &["detach-device", domain, &tmp, "--live"]);
+    let _ = fs::remove_file(&tmp);
+    result.map(|_| ())
+}
+
 pub fn list_all_names(uri: &str) -> Result<Vec<String>> {
     let raw = virsh(uri, &["list", "--all", "--name"])?;
     Ok(raw
@@ -126,6 +140,37 @@ pub fn ensure_vms_pool(uri: &str, path: &Path) -> Result<()> {
             virsh(uri, &["pool-build", FORGE_VMS_POOL])?;
             virsh(uri, &["pool-start", FORGE_VMS_POOL])?;
             let _ = virsh(uri, &["pool-autostart", FORGE_VMS_POOL]);
+            Ok(())
+        }
+    }
+}
+
+pub fn ensure_whonix_net(uri: &str) -> Result<()> {
+    match virsh(uri, &["net-info", WHONIX_NET]) {
+        Ok(_) => {
+            let xml = virsh(uri, &["net-dumpxml", WHONIX_NET])?;
+            let lower = xml.to_ascii_lowercase();
+            if lower.contains("mode='nat'")
+                || lower.contains("mode=\"nat\"")
+                || lower.contains("virbr0")
+            {
+                return Err(ForgeError::Role(format!(
+                    "{WHONIX_NET} must be forward=none, no NAT"
+                )));
+            }
+            let _ = virsh(uri, &["net-start", WHONIX_NET]);
+            Ok(())
+        }
+        Err(_) => {
+            let xml = format!(
+                "<network>\n  <name>{WHONIX_NET}</name>\n  <bridge name='virbr-forgewx' stp='off' delay='0'/>\n  <forward mode='none'/>\n</network>\n"
+            );
+            let tmp = tempfile_xml(&xml)?;
+            let result = virsh(uri, &["net-define", &tmp]);
+            let _ = fs::remove_file(&tmp);
+            result?;
+            virsh(uri, &["net-start", WHONIX_NET])?;
+            let _ = virsh(uri, &["net-autostart", WHONIX_NET]);
             Ok(())
         }
     }

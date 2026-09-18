@@ -8,6 +8,13 @@ use crate::profile::{Profile, SYSTEM_URI};
 use crate::role::Role;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtraDisk {
+    pub name: String,
+    pub path: String,
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseProof {
     pub profile: String,
     pub source_url: String,
@@ -16,6 +23,8 @@ pub struct BaseProof {
     pub upstream_kind: String,
     pub base_digest: String,
     pub base_path: String,
+    #[serde(default)]
+    pub extra: Vec<ExtraDisk>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

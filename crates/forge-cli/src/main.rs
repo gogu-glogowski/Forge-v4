@@ -71,6 +71,8 @@ enum DevCommands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// USB net devices and dongle B pin
+    Usb,
 }
 
 fn main() -> ExitCode {
@@ -116,8 +118,16 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
             let profile: Profile = profile.parse()?;
             let forge = Forge::open()?;
             let created = forge.create(profile, name.as_deref(), false, &cli_progress())?;
-            println!("created {}  uuid={}", created.name, created.uuid);
-            println!("Open it in GNOME Boxes (qemu:///system). virt-manager is spare.");
+            for vm in &created {
+                println!("created {}  uuid={}", vm.name, vm.uuid);
+            }
+            if profile == Profile::Whonix {
+                println!(
+                    "Start gateway first, then workstation. Dongle B on the gateway via virt-manager."
+                );
+            } else {
+                println!("Open it in GNOME Boxes (qemu:///system). virt-manager is spare.");
+            }
             Ok(())
         }
         Commands::Clone { vm, new_name } => {
@@ -197,7 +207,9 @@ fn run_dev(command: DevCommands) -> Result<(), ForgeError> {
             let profile: Profile = profile.parse()?;
             let forge = Forge::open()?;
             let created = forge.create(profile, name.as_deref(), true, &cli_progress())?;
-            print!("{}", created.xml);
+            for vm in &created {
+                print!("{}", vm.xml);
+            }
             Ok(())
         }
         DevCommands::Delete { vm, dry_run } => {
@@ -209,6 +221,11 @@ fn run_dev(command: DevCommands) -> Result<(), ForgeError> {
             }
             let forge = Forge::open()?;
             println!("{}", forge.delete(&vm, true)?);
+            Ok(())
+        }
+        DevCommands::Usb => {
+            let forge = Forge::open_paths(forge_core::ForgePaths::discover())?;
+            print!("{}", forge.usb_report());
             Ok(())
         }
     }

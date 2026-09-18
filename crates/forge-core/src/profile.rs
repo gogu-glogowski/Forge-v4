@@ -17,6 +17,26 @@ pub const TSURUGI_SUMS_URL: &str = "https://tsurugi-linux.org/signed_hashes.sha5
 pub const TSURUGI_OVA_NAME: &str = "tsurugi_linux_26.03.ova";
 pub const TSURUGI_OVA_URL: &str = "https://ftp.nluug.nl/os/Linux/distr/tsurugi/01.Tsurugi_Linux_%5bLAB%5d/tsurugi_linux_26.03.ova";
 
+pub const KALI_KEY_FPR: &str = "827C8569F2518CC677FECA1AED65462EC8D5E4C5";
+pub const KALI_KEY_ASC: &str = include_str!("../../../keys/kali.asc");
+pub const KALI_SUMS_URL: &str = "https://cdimage.kali.org/current/SHA256SUMS";
+pub const KALI_SUMS_SIG_URL: &str = "https://cdimage.kali.org/current/SHA256SUMS.gpg";
+pub const KALI_IMAGE_DIR: &str = "https://cdimage.kali.org/current";
+
+pub const WHONIX_KEY_FPR: &str = "916B8D99C38EAF5E8ADC7A2A8D66066A2EEACCDA";
+pub const WHONIX_KEY_ASC: &str = include_str!("../../../keys/whonix.asc");
+pub const WHONIX_RELEASE: &str = "18.2.1.9";
+pub const WHONIX_BUNDLE: &str = "Whonix-LXQt-18.2.1.9.Intel_AMD64.qcow2.libvirt.xz";
+pub const WHONIX_BUNDLE_URL: &str = "https://www.whonix.org/download/libvirt/18.2.1.9/Whonix-LXQt-18.2.1.9.Intel_AMD64.qcow2.libvirt.xz";
+pub const WHONIX_SIG_URL: &str = "https://www.whonix.org/download/libvirt/18.2.1.9/Whonix-LXQt-18.2.1.9.Intel_AMD64.qcow2.libvirt.xz.asc";
+pub const WHONIX_GW_NAME: &str = "whonix-gateway";
+pub const WHONIX_WS_NAME: &str = "whonix-workstation";
+
+pub const SIFT_PAGE_URL: &str = "https://www.sans.org/tools/sift-workstation";
+/// SHA-256 published on the SANS page (24 Apr 2026 OVA). Live pull prefers the page scrape.
+pub const SIFT_PUBLISHED_SHA256: &str =
+    "69960210f92f2329ea69c648c971c23d6bd42568de66586ee4b8273797b9c860";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Profile {
     Tsurugi,
@@ -65,10 +85,14 @@ impl Profile {
         matches!(self, Self::Tsurugi | Self::Sift)
     }
 
-    /// This cut: pull + create for Tsurugi (isolated) only.
     #[must_use]
     pub fn engine_ready(self) -> bool {
-        matches!(self, Self::Tsurugi)
+        true
+    }
+
+    #[must_use]
+    pub fn default_name(self) -> &'static str {
+        self.default_vm_names()[0]
     }
 
     #[must_use]
@@ -85,7 +109,16 @@ impl Profile {
     pub fn memory_mib(self) -> u32 {
         match self {
             Self::Tsurugi | Self::Sift => 8192,
-            Self::Kali | Self::Whonix => 4096,
+            Self::Kali => 4096,
+            Self::Whonix => 2048,
+        }
+    }
+
+    #[must_use]
+    pub fn workstation_memory_mib(self) -> u32 {
+        match self {
+            Self::Whonix => 4096,
+            other => other.memory_mib(),
         }
     }
 
@@ -102,7 +135,7 @@ impl Profile {
             Ok(())
         } else {
             Err(ForgeError::NotThisCut(format!(
-                "{}: this cut implements pull/create for tsurugi (isolated) only",
+                "{}: unknown to this engine",
                 self.id()
             )))
         }
@@ -140,7 +173,11 @@ mod tests {
         assert!(Profile::Tsurugi.is_isolated());
         assert!(Profile::Tsurugi.engine_ready());
         assert_eq!(Profile::Tsurugi.role(), Role::Isolated);
-        assert!(!Profile::Kali.engine_ready());
+        assert!(Profile::Kali.engine_ready());
+        assert_eq!(Profile::Kali.role(), Role::OsintClearnet);
+        assert!(Profile::Sift.engine_ready());
+        assert_eq!(Profile::Sift.role(), Role::Isolated);
+        assert!(Profile::Whonix.engine_ready());
         assert!(!Profile::Whonix.is_isolated());
     }
 

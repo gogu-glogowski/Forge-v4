@@ -44,6 +44,14 @@ pub fn exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[must_use]
+pub fn first_existing(names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find(|name| exists(name))
+        .map(|name| (*name).to_owned())
+}
+
 pub fn run_checked(name: impl AsRef<OsStr>, args: &[&str]) -> Result<String> {
     let name_str = name.as_ref().to_string_lossy().into_owned();
     let output = command(&name_str)

@@ -81,6 +81,38 @@ pub fn verify_clearsign(homedir: &Path, signed: &Path, progress: &Progress) -> R
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+pub fn verify_detached(
+    homedir: &Path,
+    signature: &Path,
+    signed: &Path,
+    progress: &Progress,
+) -> Result<()> {
+    progress::message(
+        progress,
+        format!("Verifying detached signature {}", signature.display()),
+    );
+    let output = cmd::command("gpg")
+        .args([
+            "--batch",
+            "--yes",
+            "--homedir",
+            path(homedir)?,
+            "--verify",
+            path(signature)?,
+            path(signed)?,
+        ])
+        .output()
+        .map_err(|error| ForgeError::Verify(format!("gpg: {error}")))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(ForgeError::Verify(format!(
+            "OpenPGP detached verify failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
+    }
+}
+
 fn normalize_fpr(s: &str) -> String {
     s.chars()
         .filter(char::is_ascii_hexdigit)
@@ -96,7 +128,10 @@ fn path(p: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::{TSURUGI_KEY_ASC, TSURUGI_KEY_FPR};
+    use crate::profile::{
+        KALI_KEY_ASC, KALI_KEY_FPR, TSURUGI_KEY_ASC, TSURUGI_KEY_FPR, WHONIX_KEY_ASC,
+        WHONIX_KEY_FPR,
+    };
 
     #[test]
     fn vendored_tsurugi_key_matches_pin() {
@@ -111,6 +146,36 @@ mod tests {
         )
         .expect("import");
         assert!(homedir.is_dir());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn vendored_kali_key_matches_pin() {
+        let dir = std::env::temp_dir().join(format!("forge-key-{}", uuid::Uuid::new_v4()));
+        let paths = ForgePaths::under(dir.clone(), false);
+        import_and_pin(
+            &paths,
+            "kali",
+            KALI_KEY_ASC,
+            KALI_KEY_FPR,
+            &crate::progress::noop,
+        )
+        .expect("import");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn vendored_whonix_key_matches_pin() {
+        let dir = std::env::temp_dir().join(format!("forge-key-{}", uuid::Uuid::new_v4()));
+        let paths = ForgePaths::under(dir.clone(), false);
+        import_and_pin(
+            &paths,
+            "whonix",
+            WHONIX_KEY_ASC,
+            WHONIX_KEY_FPR,
+            &crate::progress::noop,
+        )
+        .expect("import");
         let _ = fs::remove_dir_all(dir);
     }
 }

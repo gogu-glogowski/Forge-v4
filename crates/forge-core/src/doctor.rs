@@ -55,6 +55,8 @@ pub fn run() -> Result<DoctorReport> {
     checks.push(boxes_rpm_check());
     checks.push(virt_manager_check());
     checks.push(bin_check("gpg", "GnuPG", Some("sudo dnf install gnupg2")));
+    checks.push(seven_zip_check());
+    checks.push(dongle_b_check());
 
     let system = virt::try_connect(SYSTEM_URI);
     match &system {
@@ -270,6 +272,67 @@ fn virt_manager_check() -> Check {
             detail: "missing — daily work uses Boxes; install for XML/USB spare".to_owned(),
             fix: Some("sudo dnf install virt-manager virt-viewer".to_owned()),
         }
+    }
+}
+
+fn dongle_b_check() -> Check {
+    let paths = crate::paths::ForgePaths::discover();
+    let pin = crate::usb::load_pin(&paths).ok().flatten();
+    let plugged = crate::usb::scan_usb_net().unwrap_or_default();
+    match (pin, plugged.len()) {
+        (Some(id), _) if plugged.iter().any(|d| d.id == id) => Check {
+            status: CheckStatus::Ok,
+            name: "Dongle B".to_owned(),
+            detail: format!(
+                "{} plugged (passthrough on start of kali/whonix-gw)",
+                id.display()
+            ),
+            fix: None,
+        },
+        (Some(id), _) => Check {
+            status: CheckStatus::Warn,
+            name: "Dongle B".to_owned(),
+            detail: format!(
+                "{} pinned but not plugged — start without WAN",
+                id.display()
+            ),
+            fix: None,
+        },
+        (None, 0) => Check {
+            status: CheckStatus::Ok,
+            name: "Dongle B".to_owned(),
+            detail: "not plugged (human cable B). Isolated never gets it.".to_owned(),
+            fix: None,
+        },
+        (None, 1) => Check {
+            status: CheckStatus::Ok,
+            name: "Dongle B".to_owned(),
+            detail: format!("auto {} {}", plugged[0].id.display(), plugged[0].label),
+            fix: Some("optional: echo vvvv:pppp > ~/.local/share/forge/dongle-b".to_owned()),
+        },
+        (None, n) => Check {
+            status: CheckStatus::Fail,
+            name: "Dongle B".to_owned(),
+            detail: format!("{n} USB net devices; pin one as B"),
+            fix: Some("FORGE_DONGLE_B=vvvv:pppp  or  forge dev usb".to_owned()),
+        },
+    }
+}
+
+fn seven_zip_check() -> Check {
+    match cmd::first_existing(&["7z", "7zz", "7za"]) {
+        Some(bin) => Check {
+            status: CheckStatus::Ok,
+            name: "7z".to_owned(),
+            detail: format!("{bin} found (Kali *.7z extract)"),
+            fix: None,
+        },
+        None => Check {
+            status: CheckStatus::Fail,
+            name: "7z".to_owned(),
+            detail: "7z/7zz/7za not found — needed for forge pull kali".to_owned(),
+            fix: Some("sudo dnf install 7zip".to_owned()),
+        },
     }
 }
 

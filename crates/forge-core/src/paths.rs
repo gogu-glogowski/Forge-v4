@@ -85,7 +85,23 @@ impl ForgePaths {
 
     #[must_use]
     pub fn base_qcow2(&self, profile: Profile) -> PathBuf {
-        self.bases.join(format!("{}.qcow2", profile.id()))
+        match profile {
+            Profile::Whonix => self.named_base(crate::profile::WHONIX_GW_NAME),
+            _ => self.named_base(profile.id()),
+        }
+    }
+
+    #[must_use]
+    pub fn named_base(&self, name: &str) -> PathBuf {
+        self.bases.join(format!("{name}.qcow2"))
+    }
+
+    #[must_use]
+    pub fn whonix_bases(&self) -> (PathBuf, PathBuf) {
+        (
+            self.named_base(crate::profile::WHONIX_GW_NAME),
+            self.named_base(crate::profile::WHONIX_WS_NAME),
+        )
     }
 
     #[must_use]

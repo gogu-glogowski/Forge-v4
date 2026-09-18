@@ -52,4 +52,5 @@ fn dev_help_exists() {
     assert!(out.status.success());
     assert!(text.contains("doctor"));
     assert!(text.contains("xml"));
+    assert!(text.contains("usb"));
 }

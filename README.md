@@ -4,7 +4,7 @@ Fedora-first KVM/libvirt lab. Greenfield after [v2](https://github.com/gogu-glog
 
 Contract: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-**This engine cut:** `forge dev doctor` plus `forge pull tsurugi` / `forge create tsurugi` (role `isolated`). Kali, SIFT, and Whonix are in the catalog; pull/create refuse them until a later cut. Daily display is GNOME Boxes on `qemu:///system`; virt-manager is spare.
+**This engine cut:** `forge pull` fetches and verifies all four profiles. SIFT’s OVA is behind SANS Portal — after login, `FORGE_SIFT_OVA=/path/to.ova forge pull sift`. Dongle **B** is a human cable: `forge start kali` / `whonix-gateway` attaches it live if plugged (pin `FORGE_DONGLE_B=vvvv:pppp` or `forge dev usb`). Isolated never gets it. Daily display is GNOME Boxes on `qemu:///system`; virt-manager is spare.
 
 Five guests, four roles. Nothing else.
 

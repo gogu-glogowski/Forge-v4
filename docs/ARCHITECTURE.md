@@ -1,6 +1,6 @@
 # Forge 4.0 — architektura
 
-Stan: **pierwszy silnik**. `doctor` + `pull`/`create` dla Tsurugi (isolated). Kali / SIFT / Whonix — jeszcze nie.
+Stan: **silnik**. Cztery profile: Tsurugi, SIFT, Kali, para Whonix. Obrazy ściąga `forge pull` (SIFT: OVA po logowaniu SANS, `FORGE_SIFT_OVA`).
 
 Nie przepisujemy 2.5/3.0. Bierzemy stamtąd: fail-closed, podpisane obrazy, para Whonix bez uplinku na Workstation. **Nie bierzemy:** lasu komend z README v2 (`plan` / `inspect` / `fetch` / `prepare`), gościa Fedora Workstation, NAT-u hosta dla VM.
 
@@ -232,7 +232,9 @@ Nie wraca: pełne przehashowanie obrazu na `start`, łańcuch SLSA, gość jako 
 |------|--------|
 | Ten plik + README + `forge` (Rust) | GUI w Forge (jest Boxes) |
 | `forge dev doctor` | silent host repair |
-| `forge pull tsurugi` / `forge create tsurugi` | Kali, SIFT, Whonix pull/create |
-| Overlay + isolated XML (zero NIC) | hostdev USB w create (dongle B: virt-manager zapas) |
+| `forge pull` / `forge create` tsurugi, sift, kali, whonix | hostdev USB w `create` (kabel B to nie create) |
+| SIFT: SHA-256 ze strony SANS; OVA z `FORGE_SIFT_OVA` | Fedora/Debian/Ubuntu guest |
+| `start` kali/whonix-gw: live USB hostdev B jeśli wpięty | NAT / passt / `virbr0` |
+| sieć `forge-whonix` `forward=none` | dongle w dwóch domenach |
 
-Następny cut: `pull`/`create` Kali (osint-clearnet) albo para Whonix.
+Dongle B: człowiek wkłada. Forge przypina przy `start` (nie kradnie). Pin: `FORGE_DONGLE_B=vvvv:pppp` albo `forge dev usb`. virt-manager zostaje zapasem.

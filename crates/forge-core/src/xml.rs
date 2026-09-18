@@ -130,6 +130,7 @@ pub struct XmlFacts {
     pub has_virbr0: bool,
     pub forge_whonix_nets: usize,
     pub hostdev_usb: usize,
+    pub usb_ids: Vec<crate::usb::UsbId>,
     pub disk_files: Vec<String>,
     pub forge_profile: Option<String>,
     pub forge_role: Option<String>,
@@ -157,6 +158,7 @@ pub fn inspect(xml: &str) -> XmlFacts {
         hostdev_usb: hostdev_usb_count(&lower),
         ..XmlFacts::default()
     };
+    facts.usb_ids = crate::usb::ids_in_xml(xml);
     facts.disk_files = source_files(xml);
     facts.forge_profile = meta_text(xml, "profile");
     facts.forge_role = meta_text(xml, "role");
@@ -317,5 +319,70 @@ mod tests {
         let err = check_role(&xml, Role::Isolated).expect_err("must fail");
         let msg = err.to_string();
         assert!(msg.contains("NAT") || msg.contains("NIC"));
+    }
+
+    #[test]
+    fn kali_xml_is_osint_no_nic() {
+        let spec = DomainSpec {
+            name: "kali",
+            uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            profile: "kali",
+            role: Role::OsintClearnet,
+            overlay: "/var/lib/forge/vms/kali.qcow2",
+            base_digest: "sha256:deadbeef",
+            memory_mib: 4096,
+            vcpus: 2,
+        };
+        let xml = domain_xml(&spec);
+        assert!(!xml.contains("<interface"));
+        assert!(xml.contains("osint-clearnet"));
+        check_role(&xml, Role::OsintClearnet).expect("osint ok");
+        let with_nat = xml.replace(
+            "</disk>\n",
+            "</disk>\n    <interface type='network'><source network='default'/></interface>\n",
+        );
+        assert!(check_role(&with_nat, Role::OsintClearnet).is_err());
+    }
+
+    #[test]
+    fn whonix_pair_xml_roles() {
+        let gw = DomainSpec {
+            name: "whonix-gateway",
+            uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            profile: "whonix",
+            role: Role::WhonixGw,
+            overlay: "/var/lib/forge/vms/whonix-gateway.qcow2",
+            base_digest: "sha256:gw",
+            memory_mib: 2048,
+            vcpus: 2,
+        };
+        let ws = DomainSpec {
+            name: "whonix-workstation",
+            uuid: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+            profile: "whonix",
+            role: Role::WhonixWs,
+            overlay: "/var/lib/forge/vms/whonix-workstation.qcow2",
+            base_digest: "sha256:ws",
+            memory_mib: 4096,
+            vcpus: 2,
+        };
+        let gw_xml = domain_xml(&gw);
+        let ws_xml = domain_xml(&ws);
+        assert!(gw_xml.contains("forge-whonix"));
+        assert!(ws_xml.contains("forge-whonix"));
+        assert!(!gw_xml.contains("default"));
+        assert!(!ws_xml.contains("<hostdev"));
+        check_role(&gw_xml, Role::WhonixGw).unwrap();
+        check_role(&ws_xml, Role::WhonixWs).unwrap();
+        let nat = gw_xml.replace("forge-whonix", "default");
+        assert!(check_role(&nat, Role::WhonixGw).is_err());
+    }
+
+    #[test]
+    fn isolated_rejects_usb_hostdev() {
+        let mut xml = domain_xml(&isolated_spec());
+        xml.push_str(&crate::usb::UsbId::parse("0b95:1790").unwrap().hostdev_xml());
+        let err = check_role(&xml, Role::Isolated).expect_err("usb");
+        assert!(err.to_string().contains("USB"));
     }
 }

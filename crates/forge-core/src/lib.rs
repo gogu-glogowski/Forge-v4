@@ -11,6 +11,7 @@ mod profile;
 pub mod progress;
 mod pull;
 mod role;
+mod usb;
 mod verify;
 mod virt;
 mod xml;

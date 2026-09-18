@@ -64,6 +64,30 @@ pub fn checksum_for(sums: &str, pred: impl Fn(&str) -> bool) -> Option<(String, 
     None
 }
 
+/// SHA-256 as published on the SANS SIFT page (`sha256 = <hex>`).
+#[must_use]
+pub fn sift_sha256_from_page(html: &str) -> Option<String> {
+    for line in html.lines() {
+        let lower = line.to_ascii_lowercase();
+        let Some(rest) = lower
+            .split("sha256")
+            .nth(1)
+            .and_then(|s| s.split('=').nth(1))
+        else {
+            continue;
+        };
+        let hex: String = rest
+            .chars()
+            .filter(char::is_ascii_hexdigit)
+            .take(64)
+            .collect();
+        if hex.len() == 64 {
+            return Some(hex);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +102,19 @@ mod tests {
         assert_eq!(name, "tsurugi_linux_26.03.ova");
         assert!(hash.starts_with("658687df"));
         assert_eq!(hash.len(), 128);
+    }
+
+    #[test]
+    fn parse_sift_sha256_from_sans_html() {
+        let html = "\
+Hash Values
+md5 = 81029da183c0dc0dd7cd2b5bb04bfda0
+sha1 = b87b8fa5c46ab55bbb4bf414de9519688901b5a9
+sha256 = 69960210f92f2329ea69c648c971c23d6bd42568de66586ee4b8273797b9c860
+";
+        assert_eq!(
+            sift_sha256_from_page(html).as_deref(),
+            Some("69960210f92f2329ea69c648c971c23d6bd42568de66586ee4b8273797b9c860")
+        );
     }
 }
