@@ -241,3 +241,7 @@ Nie wraca: pełne przehashowanie obrazu na `start`, łańcuch SLSA, gość jako 
 | sieć `forge-whonix` `forward=none` | dongle w dwóch domenach |
 
 Dongle B: człowiek wkłada. Forge przypina przy `start` (nie kradnie). Pin: `FORGE_DONGLE_B=vvvv:pppp` albo `forge dev usb`. virt-manager zostaje zapasem.
+
+### Must-have po ręcznych testach dongle B
+
+Hook **`/etc/libvirt/hooks/qemu`** wołający Forge przy każdym starcie/zatrzymaniu domeny Forge (Boxes Play, virt-manager, `virsh`). Fail-closed: digest bazy, rola, exclusive B, attach/detach hostdev — ten sam kontrakt co `forge start` / `stop`. Nie patch Boxes. Nie robić przed zielonym testem kabla B.
