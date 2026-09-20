@@ -39,7 +39,7 @@ sudo systemctl enable --now libvirtd
 sudo usermod -aG libvirt "$USER"
 ```
 
-Daily display is **GNOME Boxes** (rpm, not Flatpak). `forge` writes `~/.config/gnome-boxes/sources/QEMU System` (`qemu:///system`). If Boxes was already open, quit it fully and reopen. Do not create VMs from Boxes — that is session + NAT, not this lab. **virt-manager** is the spare (XML, USB dongle **B**).
+**Start and stop from the CLI** (`forge start` / `forge stop`). That is the control plane: base digest, role XML, dongle B attach/detach, exclusive B, Whonix order. GNOME Boxes (rpm, not Flatpak) is the **display** — open the guest after `forge start`, work, close the window. Play/Stop in Boxes talks to libvirt directly and skips Forge. Do not create VMs from Boxes (session + NAT). `forge` writes `~/.config/gnome-boxes/sources/QEMU System` (`qemu:///system`); if Boxes was already open, quit it fully and reopen. **virt-manager** is the spare (XML).
 
 Log out and back in so the `libvirt` group applies.
 

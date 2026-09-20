@@ -184,16 +184,17 @@ Jeśli kiedyś recovery będzie musiało wrócić, to pod `doctor`, nie jako trz
 - Storage: qcow2 pod kontrolą Forge (`$FORGE_DATA_DIR` albo `~/.local/share/forge/`)
 - Start Whonix: najpierw Gateway, potem Workstation; stop odwrotnie (`start`/`stop` na parze może to wymusić później; na razie dokumentowane)
 
-### Frontend — Boxes codziennie, virt-manager zapas
+### Frontend — CLI steruje, Boxes pokazuje, virt-manager zapas
 
-Forge **nie** osadza pulpitu gościa. Operator ogląda nakładkę w zewnętrznym GUI.
+Forge **nie** osadza pulpitu gościa i **nie** siedzi w przycisku Play GNOME Boxes. Play/Stop w Boxes to czysty libvirt: pominie digest bazy, strażnika roli i hostdev B.
 
 | | Narzędzie | Kiedy |
 |--|-----------|--------|
-| **Domyślnie** | **GNOME Boxes** (`gnome-boxes` z dnf) | praca w gościu: otwórz, pracuj, zamknij |
-| **Zapas** | **virt-manager** (+ `virt-viewer`) | XML, hostdev USB dongle **B**, gdy Boxes nie widzi domeny albo nie podpina SPICE |
+| **Sterowanie** | **`forge start` / `forge stop`** | jedyna droga, która trzyma kontrakt (digest, rola, dongle B, kolejność Whonix) |
+| **Pulpit** | **GNOME Boxes** (`gnome-boxes` z dnf) | po `forge start`: otwórz, pracuj, zamknij okno (nie Play) |
+| **Zapas** | **virt-manager** (+ `virt-viewer`) | XML, gdy Boxes nie widzi domeny albo nie podpina SPICE |
 
-Boxes **nie** jest fabryką VM. Kreator „New” w Boxes stawia `qemu:///session` i NAT — to nie lab Forge. Jedyna legalna droga do maszyny: `forge create`. `status` krzyczy, gdy w XML wróci `virbr0` / `type='user'`.
+Boxes **nie** jest fabryką VM i nie jest wyłącznikiem zasilania lab. Kreator „New” w Boxes stawia `qemu:///session` i NAT — to nie lab Forge. Jedyna legalna droga do maszyny: `forge create`. Start/stop: `forge`. `status` krzyczy, gdy w XML wróci `virbr0` / `type='user'`.
 
 Boxes z pudełka patrzy tylko na `qemu:///session`. Forge zapisuje `~/.config/gnome-boxes/sources/QEMU System` z URI `qemu+unix:///system`. Po tym Boxes listuje overlaye (restart, jeśli był otwarty). Kreator „New” nadal jest session + NAT — nie używać.
 
