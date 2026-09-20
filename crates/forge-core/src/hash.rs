@@ -4,7 +4,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256, Sha512};
 
-use crate::error::Result;
+use crate::error::{Result, io_path};
 use crate::progress::{ByteProgress, Progress};
 
 #[derive(Debug, Clone, Copy)]
@@ -23,7 +23,7 @@ pub fn sha512_file(path: &Path, progress: &Progress) -> Result<String> {
 
 pub fn hash_file(path: &Path, progress: &Progress, kind: HashKind) -> Result<String> {
     let total = fs::metadata(path).ok().map(|meta| meta.len());
-    let mut file = File::open(path)?;
+    let mut file = File::open(path).map_err(|err| io_path(&err, path, "cannot read"))?;
     let mut buf = vec![0_u8; 1024 * 1024];
     let mut done = 0_u64;
     let meter = ByteProgress::new(progress, "hash");
@@ -102,6 +102,29 @@ mod tests {
         assert_eq!(name, "tsurugi_linux_26.03.ova");
         assert!(hash.starts_with("658687df"));
         assert_eq!(hash.len(), 128);
+    }
+
+    #[test]
+    fn unreadable_file_names_the_path() {
+        let dir = std::env::temp_dir().join(format!("forge-hash-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secret.qcow2");
+        fs::write(&path, b"nope").unwrap();
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o000);
+        fs::set_permissions(&path, perms).unwrap();
+        let err = sha256_file(&path, &crate::progress::noop).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("secret.qcow2"), "{text}");
+        assert!(
+            text.contains("sudo forge") || text.contains("Permission denied"),
+            "{text}"
+        );
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&path, perms).unwrap();
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

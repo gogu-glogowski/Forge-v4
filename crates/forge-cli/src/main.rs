@@ -106,6 +106,11 @@ fn leftover_hint(args: &[String]) -> Option<String> {
 }
 
 fn run(cli: Cli) -> Result<(), ForgeError> {
+    if forge_core::effective_uid() == 0 {
+        return Err(ForgeError::Host(
+            "run as yourself, not `sudo forge` (root PATH misses ~/.local/bin; overlays would be root-owned). pull/create prompt sudo only for /var/lib/forge".to_owned(),
+        ));
+    }
     match cli.command {
         Commands::Pull { profile } => {
             let profile: Profile = profile.parse()?;
@@ -126,7 +131,9 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
                     "Start gateway first, then workstation. Dongle B on the gateway via virt-manager."
                 );
             } else {
-                println!("Open it in GNOME Boxes (qemu:///system). virt-manager is spare.");
+                println!(
+                    "Open it in GNOME Boxes. If the list is empty, quit Boxes fully and reopen — Forge points it at qemu:///system."
+                );
             }
             Ok(())
         }

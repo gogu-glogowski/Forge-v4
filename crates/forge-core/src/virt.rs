@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::cmd::{self, command};
-use crate::error::{ForgeError, Result};
+use crate::error::{ForgeError, Result, io_path};
 use crate::profile::{FORGE_VMS_POOL, SYSTEM_URI, WHONIX_NET};
 use crate::role::VmPower;
 
@@ -178,7 +178,8 @@ pub fn ensure_whonix_net(uri: &str) -> Result<()> {
 
 pub fn qemu_img_create_overlay(base: &Path, overlay: &Path) -> Result<()> {
     if let Some(parent) = overlay.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)
+            .map_err(|err| io_path(&err, parent, "cannot create overlay dir"))?;
     }
     let base_s = path_str(base)?;
     let overlay_s = path_str(overlay)?;

@@ -1,4 +1,5 @@
 use std::io;
+use std::path::Path;
 use std::process::ExitStatus;
 
 #[derive(Debug, thiserror::Error)]
@@ -38,6 +39,15 @@ impl ForgeError {
 }
 
 pub type Result<T> = std::result::Result<T, ForgeError>;
+
+pub(crate) fn io_path(err: &io::Error, path: &Path, what: &str) -> ForgeError {
+    let extra = if err.kind() == io::ErrorKind::PermissionDenied {
+        " — run forge as yourself (not `sudo forge`); sudo is only for /var/lib/forge"
+    } else {
+        ""
+    };
+    ForgeError::Host(format!("{what} {}: {err}{extra}", path.display()))
+}
 
 pub(crate) fn command_fail(name: &str, status: ExitStatus, stderr: &[u8]) -> ForgeError {
     let stderr = String::from_utf8_lossy(stderr);

@@ -1,7 +1,5 @@
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::cmd;
 use crate::error::{ForgeError, Result};
@@ -14,18 +12,31 @@ use crate::profile::{
     TSURUGI_OVA_URL, TSURUGI_SUMS_URL, WHONIX_BUNDLE, WHONIX_BUNDLE_URL, WHONIX_KEY_ASC,
     WHONIX_KEY_FPR, WHONIX_RELEASE, WHONIX_SIG_URL, WHONIX_WS_NAME,
 };
-use crate::progress::{self, ByteProgress, Progress};
+use crate::progress::{self, Progress};
 use crate::verify;
 use crate::virt;
 
 pub fn pull(paths: &ForgePaths, profile: Profile, progress: &Progress) -> Result<PathBuf> {
     profile.require_engine()?;
     paths.ensure_user()?;
-    match profile {
-        Profile::Tsurugi => pull_tsurugi(paths, progress),
-        Profile::Kali => pull_kali(paths, progress),
-        Profile::Whonix => pull_whonix(paths, progress),
-        Profile::Sift => pull_sift(paths, progress),
+    let run = || {
+        ensure_lab_storage(paths)?;
+        match profile {
+            Profile::Tsurugi => pull_tsurugi(paths, progress),
+            Profile::Kali => pull_kali(paths, progress),
+            Profile::Whonix => pull_whonix(paths, progress),
+            Profile::Sift => pull_sift(paths, progress),
+        }
+    };
+    if paths.privileged_bases {
+        progress::message(
+            progress,
+            "sudo: type your password NOW. A root helper stays up until this pull finishes — no password at the end (not sudo forge).",
+        );
+        let session = cmd::SudoSession::start()?;
+        cmd::scope_priv(session, run)
+    } else {
+        run()
     }
 }
 
@@ -33,9 +44,10 @@ fn pull_tsurugi(paths: &ForgePaths, progress: &Progress) -> Result<PathBuf> {
     let dir = paths.cache_dir(Profile::Tsurugi);
     fs::create_dir_all(&dir)?;
     progress::message(progress, "Fetching Tsurugi signed SHA512 hashes");
-    let sums_path = download_to(
+    let sums_path = crate::download::fetch(
         TSURUGI_SUMS_URL,
         &dir.join("signed_hashes.sha512"),
+        crate::download::Policy::Refresh,
         progress,
     )?;
     let keyring =
@@ -47,14 +59,18 @@ fn pull_tsurugi(paths: &ForgePaths, progress: &Progress) -> Result<PathBuf> {
     .ok_or_else(|| ForgeError::Image("signed hashes have no tsurugi_linux *.ova".to_owned()))?;
     let url = ova_url(&artifact);
     progress::message(progress, format!("Fetching {artifact}"));
-    let ova = download_to(&url, &dir.join(&artifact), progress)?;
-    progress::message(progress, "Hashing OVA (SHA-512)");
-    let actual = hash::sha512_file(&ova, progress)?;
-    if actual != expected {
-        return Err(ForgeError::Verify(format!(
-            "Tsurugi OVA checksum mismatch (expected {expected}, got {actual})"
-        )));
-    }
+    let ova = crate::download::fetch_verified(&url, &dir.join(&artifact), progress, |path| {
+        progress::message(progress, "Hashing OVA (SHA-512)");
+        let actual = hash::sha512_file(path, progress)?;
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(ForgeError::Verify(format!(
+                "Tsurugi OVA checksum mismatch (expected {expected}, got {actual})"
+            )))
+        }
+    })?;
+    let actual = expected;
     let qcow = convert_ova_to_qcow2(&ova, &dir, progress)?;
     install_base(
         paths,
@@ -82,8 +98,18 @@ fn pull_kali(paths: &ForgePaths, progress: &Progress) -> Result<PathBuf> {
         std::env::var("FORGE_KALI_SUMS_URL").unwrap_or_else(|_| KALI_SUMS_URL.to_owned());
     let sig_url =
         std::env::var("FORGE_KALI_SUMS_SIG_URL").unwrap_or_else(|_| KALI_SUMS_SIG_URL.to_owned());
-    let sums_path = download_to(&sums_url, &dir.join("SHA256SUMS"), progress)?;
-    let sig_path = download_to(&sig_url, &dir.join("SHA256SUMS.gpg"), progress)?;
+    let sums_path = crate::download::fetch(
+        &sums_url,
+        &dir.join("SHA256SUMS"),
+        crate::download::Policy::Refresh,
+        progress,
+    )?;
+    let sig_path = crate::download::fetch(
+        &sig_url,
+        &dir.join("SHA256SUMS.gpg"),
+        crate::download::Policy::Refresh,
+        progress,
+    )?;
     let homedir = verify::import_and_pin(paths, "kali", KALI_KEY_ASC, KALI_KEY_FPR, progress)?;
     verify::verify_detached(&homedir, &sig_path, &sums_path, progress)?;
     let sums_text = fs::read_to_string(&sums_path)?;
@@ -93,14 +119,18 @@ fn pull_kali(paths: &ForgePaths, progress: &Progress) -> Result<PathBuf> {
     .ok_or_else(|| ForgeError::Image("Kali SHA256SUMS has no *-qemu-amd64.7z".to_owned()))?;
     let url = kali_archive_url(&artifact);
     progress::message(progress, format!("Fetching {artifact}"));
-    let archive = download_to(&url, &dir.join(&artifact), progress)?;
-    progress::message(progress, "Hashing Kali archive (SHA-256)");
-    let actual = hash::sha256_file(&archive, progress)?;
-    if actual != expected {
-        return Err(ForgeError::Verify(format!(
-            "Kali archive checksum mismatch (expected {expected}, got {actual})"
-        )));
-    }
+    let archive = crate::download::fetch_verified(&url, &dir.join(&artifact), progress, |path| {
+        progress::message(progress, "Hashing Kali archive (SHA-256)");
+        let actual = hash::sha256_file(path, progress)?;
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(ForgeError::Verify(format!(
+                "Kali archive checksum mismatch (expected {expected}, got {actual})"
+            )))
+        }
+    })?;
+    let actual = expected;
     let qcow = extract_7z_qcow2(&archive, &dir, progress)?;
     install_base(
         paths,
@@ -131,23 +161,26 @@ fn pull_whonix(paths: &ForgePaths, progress: &Progress) -> Result<PathBuf> {
         progress,
         format!("Fetching Whonix {WHONIX_RELEASE} libvirt bundle"),
     );
-    let bundle = download_to(&bundle_url, &dir.join(WHONIX_BUNDLE), progress)?;
-    let sig = download_to(
+    let sig = crate::download::fetch(
         &sig_url,
         &dir.join(format!("{WHONIX_BUNDLE}.asc")),
+        crate::download::Policy::Refresh,
         progress,
     )?;
     let homedir =
         verify::import_and_pin(paths, "whonix", WHONIX_KEY_ASC, WHONIX_KEY_FPR, progress)?;
-    verify::verify_detached(&homedir, &sig, &bundle, progress)?;
+    let bundle_dest = dir.join(WHONIX_BUNDLE);
+    let bundle = crate::download::fetch_verified(&bundle_url, &bundle_dest, progress, |path| {
+        verify::verify_detached(&homedir, &sig, path, progress)
+    })?;
     let (gateway, workstation) = extract_whonix_bundle(&bundle, &dir, progress)?;
     let (gw_canon, ws_canon) = paths.whonix_bases();
+    progress::message(progress, "Hashing Whonix qcow2 (SHA-256)");
+    let gw_digest = format!("sha256:{}", hash::sha256_file(&gateway, progress)?);
+    let ws_digest = format!("sha256:{}", hash::sha256_file(&workstation, progress)?);
     progress::message(progress, "Installing immutable Whonix bases");
     install_immutable(paths, &gateway, &gw_canon)?;
     install_immutable(paths, &workstation, &ws_canon)?;
-    progress::message(progress, "Hashing Whonix bases (SHA-256)");
-    let gw_digest = format!("sha256:{}", hash::sha256_file(&gw_canon, progress)?);
-    let ws_digest = format!("sha256:{}", hash::sha256_file(&ws_canon, progress)?);
     let proof = BaseProof {
         profile: Profile::Whonix.id().to_owned(),
         source_url: bundle_url,
@@ -229,29 +262,23 @@ fn pull_sift(paths: &ForgePaths, progress: &Progress) -> Result<PathBuf> {
     let expected = sift_expected_sha256(paths, progress)?;
     let source = find_sift_ova(&dir)?;
     progress::message(progress, format!("Using SIFT OVA {source}"));
-    let ova = if source.starts_with("http://")
-        || source.starts_with("https://")
-        || source.starts_with("file://")
-    {
-        download_to(&source, &dir.join("sift.ova"), progress)?
-    } else {
-        let dest = dir.join(
-            Path::new(&source)
-                .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new("sift.ova")),
-        );
-        if dest != Path::new(&source) {
-            fs::copy(&source, &dest)?;
+    let dest = dir.join(
+        Path::new(&source)
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("sift.ova")),
+    );
+    let ova = crate::download::fetch_verified(&source, &dest, progress, |path| {
+        progress::message(progress, "Hashing SIFT OVA (SHA-256 from SANS page)");
+        let actual = hash::sha256_file(path, progress)?;
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(ForgeError::Verify(format!(
+                "SIFT OVA checksum mismatch (SANS sha256 {expected}, got {actual})"
+            )))
         }
-        dest
-    };
-    progress::message(progress, "Hashing SIFT OVA (SHA-256 from SANS page)");
-    let actual = hash::sha256_file(&ova, progress)?;
-    if actual != expected {
-        return Err(ForgeError::Verify(format!(
-            "SIFT OVA checksum mismatch (SANS sha256 {expected}, got {actual})"
-        )));
-    }
+    })?;
+    let actual = expected;
     let qcow = convert_ova_to_qcow2(&ova, &dir, progress)?;
     install_base(
         paths,
@@ -288,7 +315,12 @@ fn sift_expected_sha256(paths: &ForgePaths, progress: &Progress) -> Result<Strin
     let page_url = std::env::var("FORGE_SIFT_PAGE").unwrap_or_else(|_| SIFT_PAGE_URL.to_owned());
     progress::message(progress, format!("Reading SIFT SHA-256 from {page_url}"));
     let cache = paths.cache_dir(Profile::Sift).join("sift-page.html");
-    let page = download_to(&page_url, &cache, progress)?;
+    let page = crate::download::fetch(
+        &page_url,
+        &cache,
+        crate::download::Policy::Refresh,
+        progress,
+    )?;
     let html = fs::read_to_string(&page)?;
     hash::sift_sha256_from_page(&html).ok_or_else(|| {
         ForgeError::Verify(format!(
@@ -454,6 +486,12 @@ pub fn install_base(
     progress::message(progress, "Hashing canonical base qcow2 (SHA-256)");
     let digest = format!("sha256:{}", hash::sha256_file(src, progress)?);
     let dest = paths.base_qcow2(profile);
+    if paths.privileged_bases {
+        progress::message(
+            progress,
+            "Installing immutable base (root helper from the start of this pull)",
+        );
+    }
     install_immutable(paths, src, &dest)?;
     proof.base_digest = digest;
     proof.base_path = dest.display().to_string();
@@ -463,38 +501,157 @@ pub fn install_base(
 }
 
 fn install_immutable(paths: &ForgePaths, src: &Path, dest: &Path) -> Result<()> {
-    if let Some(parent) = dest.parent() {
-        if paths.privileged_bases {
-            cmd::sudo(&["mkdir", "-p", path(parent)?])?;
-        } else {
-            fs::create_dir_all(parent)?;
-        }
-    }
-    if dest.exists() && paths.privileged_bases {
-        let _ = cmd::sudo(&["chattr", "-i", path(dest)?]);
-    }
+    ensure_lab_storage(paths)?;
     if paths.privileged_bases {
-        cmd::sudo(&[
-            "install",
-            "-o",
-            "root",
-            "-g",
-            "qemu",
-            "-m",
-            "0440",
-            path(src)?,
-            path(dest)?,
-        ])?;
-        cmd::sudo(&["chattr", "+i", path(dest)?])?;
+        let dest_s = sh_quote(dest)?;
+        let src_s = sh_quote(src)?;
+        let exists = dest.exists();
+        let unlock = if exists {
+            format!("chattr -i {dest_s} 2>/dev/null || true\n")
+        } else {
+            String::new()
+        };
+        // One job on the live helper — no new sudo, no password at the end.
+        let script = format!(
+            "{unlock}\
+             install -o root -g qemu -m 0444 {src_s} {dest_s}\n\
+             restorecon -F {dest_s} 2>/dev/null || true\n\
+             chcon -t virt_content_t {dest_s} 2>/dev/null || true\n\
+             chattr +i {dest_s}\n"
+        );
+        cmd::priv_script(&script)?;
     } else {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| crate::error::io_path(&err, parent, "cannot create bases dir"))?;
+        }
         fs::copy(src, dest)?;
-        chmod(dest, 0o440)?;
+        chmod(dest, 0o444)?;
         let _ = cmd::command("chattr")
             .args(["+i", path(dest)?])
             .stderr(std::process::Stdio::null())
             .status();
     }
     Ok(())
+}
+
+/// Overlay dir + readable bases. Privileged hosts: sudo mkdir/chmod, never `sudo forge`.
+pub fn ensure_lab_storage(paths: &ForgePaths) -> Result<()> {
+    if !paths.privileged_bases {
+        fs::create_dir_all(&paths.bases)
+            .map_err(|err| crate::error::io_path(&err, &paths.bases, "cannot create bases dir"))?;
+        fs::create_dir_all(&paths.vms)
+            .map_err(|err| crate::error::io_path(&err, &paths.vms, "cannot create overlay dir"))?;
+        return Ok(());
+    }
+    if !needs_privileged_prepare(paths) {
+        return Ok(());
+    }
+    let script = privileged_prepare_script(paths)?;
+    cmd::priv_script(&script)?;
+    if needs_privileged_prepare(paths) {
+        return Err(ForgeError::Host(format!(
+            "{} still not ready after sudo (need group libvirt, readable bases). Do not `sudo forge`.",
+            paths.root.display()
+        )));
+    }
+    Ok(())
+}
+
+#[must_use]
+pub fn needs_privileged_prepare(paths: &ForgePaths) -> bool {
+    if !paths.privileged_bases {
+        return false;
+    }
+    if !crate::paths::dir_writable(&paths.vms) {
+        return true;
+    }
+    if !paths.bases.is_dir() {
+        return true;
+    }
+    if unreadable_bases(paths).next().is_some() {
+        return true;
+    }
+    bases_need_virt_content(paths)
+}
+
+fn bases_need_virt_content(paths: &ForgePaths) -> bool {
+    let Ok(entries) = fs::read_dir(&paths.bases) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.extension().and_then(|ext| ext.to_str()) == Some("qcow2")
+            && base_selinux_needs_fix(&path)
+    })
+}
+
+fn base_selinux_needs_fix(path: &Path) -> bool {
+    matches!(
+        crate::paths::selinux_type(path).as_deref(),
+        Some("virt_image_t" | "var_lib_t" | "unlabeled_t" | "default_t")
+    )
+}
+
+fn unreadable_bases(paths: &ForgePaths) -> impl Iterator<Item = PathBuf> {
+    let entries = fs::read_dir(&paths.bases).ok();
+    entries
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().and_then(|ext| ext.to_str()) == Some("qcow2")
+                && !crate::paths::is_readable(path)
+        })
+}
+
+pub(crate) fn privileged_prepare_script(paths: &ForgePaths) -> Result<String> {
+    let root = sh_quote(&paths.root)?;
+    let bases = sh_quote(&paths.bases)?;
+    let vms = sh_quote(&paths.vms)?;
+    let bases_fc = format!("{}(/.*)?", path(&paths.bases)?);
+    let vms_fc = format!("{}(/.*)?", path(&paths.vms)?);
+    if bases_fc.contains('\'') || vms_fc.contains('\'') {
+        return Err(ForgeError::Host(
+            "lab path must not contain quotes".to_owned(),
+        ));
+    }
+    Ok(format!(
+        "set -e\n\
+         mkdir -p {bases} {vms}\n\
+         chown root:root {root} {bases}\n\
+         chmod 0755 {root} {bases}\n\
+         if getent group libvirt >/dev/null; then\n\
+           chown root:libvirt {vms}\n\
+           chmod 2771 {vms}\n\
+         else\n\
+           chmod 1771 {vms}\n\
+         fi\n\
+         if command -v semanage >/dev/null 2>&1; then\n\
+           semanage fcontext -a -t virt_content_t '{bases_fc}' 2>/dev/null || \
+           semanage fcontext -m -t virt_content_t '{bases_fc}' 2>/dev/null || true\n\
+           semanage fcontext -a -t virt_image_t '{vms_fc}' 2>/dev/null || \
+           semanage fcontext -m -t virt_image_t '{vms_fc}' 2>/dev/null || true\n\
+         fi\n\
+         for f in {bases}/*.qcow2; do\n\
+           [ -e \"$f\" ] || continue\n\
+           chattr -i \"$f\" 2>/dev/null || true\n\
+           if getent group qemu >/dev/null; then chown root:qemu \"$f\"; fi\n\
+           chmod 0444 \"$f\"\n\
+           restorecon -F \"$f\" 2>/dev/null || chcon -t virt_content_t \"$f\" 2>/dev/null || true\n\
+           chattr +i \"$f\"\n\
+         done\n\
+         restorecon -RF {vms} >/dev/null 2>&1 || true\n"
+    ))
+}
+
+fn sh_quote(p: &Path) -> Result<String> {
+    let s = path(p)?;
+    if s.contains('\'') {
+        return Err(ForgeError::Image("path must not contain quotes".to_owned()));
+    }
+    Ok(format!("'{s}'"))
 }
 
 pub fn base_ready(paths: &ForgePaths, profile: Profile) -> bool {
@@ -536,52 +693,6 @@ pub fn verify_file_digest(path: &Path, expected: &str, progress: &Progress) -> R
         )));
     }
     Ok(actual)
-}
-
-fn download_to(url: &str, dest: &Path, progress: &Progress) -> Result<PathBuf> {
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if let Some(local) = url.strip_prefix("file://") {
-        fs::copy(local, dest)?;
-        return Ok(dest.to_path_buf());
-    }
-    if Path::new(url).exists() {
-        fs::copy(url, dest)?;
-        return Ok(dest.to_path_buf());
-    }
-    progress::message(progress, format!("GET {url}"));
-    let tmp = dest.with_extension("part");
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(30))
-        .timeout_read(Duration::from_secs(6 * 60 * 60))
-        .timeout_write(Duration::from_secs(60))
-        .user_agent("forge/4.0")
-        .build();
-    let response = agent
-        .get(url)
-        .call()
-        .map_err(|error| ForgeError::Image(format!("download {url}: {error}")))?;
-    let total = response
-        .header("Content-Length")
-        .and_then(|value| value.parse::<u64>().ok());
-    let mut reader = response.into_reader();
-    let mut file = File::create(&tmp)?;
-    let mut buf = vec![0_u8; 64 * 1024];
-    let mut done = 0_u64;
-    let meter = ByteProgress::new(progress, url);
-    loop {
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buf[..n])?;
-        done += n as u64;
-        meter.emit(done, total);
-    }
-    file.sync_all()?;
-    fs::rename(&tmp, dest)?;
-    Ok(dest.to_path_buf())
 }
 
 fn path(p: &Path) -> Result<&str> {
@@ -665,6 +776,48 @@ mod tests {
         .unwrap();
         assert!(base_ready(&paths, Profile::Tsurugi));
         verify_base_digest(&paths, Profile::Tsurugi, &noop).unwrap();
+        let overlay = paths.overlay_qcow2("tsurugi");
+        crate::virt::qemu_img_create_overlay(&paths.base_qcow2(Profile::Tsurugi), &overlay)
+            .expect("overlay on installed base");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn privileged_script_prepares_vms_and_readable_bases() {
+        let paths = ForgePaths::under(PathBuf::from("/var/lib/forge"), true);
+        let script = privileged_prepare_script(&paths).unwrap();
+        assert!(script.contains("mkdir -p '/var/lib/forge/bases' '/var/lib/forge/vms'"));
+        assert!(script.contains("chmod 2771"));
+        assert!(script.contains("chmod 0444"));
+        assert!(script.contains("virt_content_t"));
+        assert!(script.contains("virt_image_t"));
+        let restore = script.find("restorecon").expect("restorecon");
+        let lock = script.find("chattr +i").expect("+i");
+        assert!(restore < lock, "label while mutable, then +i");
+        assert!(!script.contains("0440"));
+    }
+
+    #[test]
+    fn needs_prepare_when_overlay_dir_missing_or_base_unreadable() {
+        let dir = std::env::temp_dir().join(format!("forge-prep-{}", uuid::Uuid::new_v4()));
+        let paths = ForgePaths::under(dir.clone(), true);
+        assert!(needs_privileged_prepare(&paths));
+        fs::create_dir_all(&paths.bases).unwrap();
+        fs::create_dir_all(&paths.vms).unwrap();
+        let dummy = paths.named_base("kali");
+        fs::write(&dummy, b"qcow").unwrap();
+        assert!(
+            !needs_privileged_prepare(&paths),
+            "writable vms + readable base"
+        );
+        let mut perms = fs::metadata(&dummy).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o000);
+        fs::set_permissions(&dummy, perms).unwrap();
+        assert!(needs_privileged_prepare(&paths));
+        let mut perms = fs::metadata(&dummy).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&dummy, perms).unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 

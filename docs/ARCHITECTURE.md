@@ -86,7 +86,7 @@ GNOME Boxes (codzienność) i virt-manager (zapas) pokazują **domeny** (lista V
 
 1. **Nigdy nie `define` domeny na bazie.** Nie ma XML, nie ma Start, nie ma klawisza Delete przy kanonie. `forge start` / `stop` / `delete` / `clone` działają wyłącznie na nazwie **nakładki**.
 2. **Bazy poza pulą libvirt.** Katalog `/var/lib/forge/bases/` **nie** jest `pool-define`. Ani Boxes, ani virt-manager w Storage ich nie listują. Nakładki siedzą w puli `forge-vms` (albo równoważnej) — to ma być widać.
-3. Po `pull`: plik bazy `chmod 0440`, właściciel `root:qemu`, **`chattr +i`** (immutable). QEMU czyta backing file; przypadkowy zapis i „New VM from this disk” w GUI utrudnione. Kolejny `pull` tej samej bazy: `chattr -i` → podmiana po weryfikacji → znowu `+i`.
+3. Po `pull`: plik bazy `chmod 0444`, właściciel `root:qemu`, **`chattr +i`**, SELinux **`virt_content_t`** (to backing, nie obraz do zapisu). Nakładki: `/var/lib/forge/vms` (`root:libvirt`, `2771`, `virt_image_t`). XML ma `<backingStore>` z `seclabel relabel='no'` — libvirt nie może setxattr na `+i` (EPERM w virt-managerze). Label **przed** `+i`. `pull` woła `sudo` tylko na mkdir/install/chattr/restorecon — **nie** `sudo forge`.
 4. XML gościa ma **jeden** dysk: nakładkę. Baza tylko jako `backing file` w qcow2, nie jako drugi `<disk>`.
 5. SELinux (Fedora): fcontext na `/var/lib/forge/bases(/.*)?` tak, żeby `svirt_t` **czytał** backing (typ jak `virt_content_t` / `svirt_image_t` — `doctor` to sprawdza). Bez tego overlay nie wstanie.
 
@@ -195,7 +195,7 @@ Forge **nie** osadza pulpitu gościa. Operator ogląda nakładkę w zewnętrznym
 
 Boxes **nie** jest fabryką VM. Kreator „New” w Boxes stawia `qemu:///session` i NAT — to nie lab Forge. Jedyna legalna droga do maszyny: `forge create`. `status` krzyczy, gdy w XML wróci `virbr0` / `type='user'`.
 
-Boxes musi mieć połączenie **`qemu:///system`** (raz: *Connect to a remote computer* / URI `qemu:///system`), nie własny session. Inaczej listy Forge nie zobaczy.
+Boxes z pudełka patrzy tylko na `qemu:///session`. Forge zapisuje `~/.config/gnome-boxes/sources/QEMU System` z URI `qemu+unix:///system`. Po tym Boxes listuje overlaye (restart, jeśli był otwarty). Kreator „New” nadal jest session + NAT — nie używać.
 
 **Nie Flatpak** `org.gnome.Boxes`: własny stack, nie widzi systemowych domen. `doctor` sprawdza rpm `gnome-boxes`. virt-manager zostaje w dnf jako zapas, nie jako codzienność.
 
@@ -235,6 +235,8 @@ Nie wraca: pełne przehashowanie obrazu na `start`, łańcuch SLSA, gość jako 
 | `forge pull` / `forge create` tsurugi, sift, kali, whonix | hostdev USB w `create` (kabel B to nie create) |
 | SIFT: SHA-256 ze strony SANS; OVA z `FORGE_SIFT_OVA` | Fedora/Debian/Ubuntu guest |
 | `start` kali/whonix-gw: live USB hostdev B jeśli wpięty | NAT / passt / `virbr0` |
+| `pull`/`create`: sudo tylko na `/var/lib/forge` (nie `sudo forge`) | NOPASSWD, overlays jako root |
+| `pull`: hasło od razu, jeden proces root do końca (nie timestamp) | hasło po wielogodzinnym downloadzie |
 | sieć `forge-whonix` `forward=none` | dongle w dwóch domenach |
 
 Dongle B: człowiek wkłada. Forge przypina przy `start` (nie kradnie). Pin: `FORGE_DONGLE_B=vvvv:pppp` albo `forge dev usb`. virt-manager zostaje zapasem.

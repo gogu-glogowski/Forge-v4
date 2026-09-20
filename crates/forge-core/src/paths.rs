@@ -1,5 +1,5 @@
 use std::env;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -127,6 +127,63 @@ pub fn chmod(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+#[must_use]
+pub fn is_readable(path: &Path) -> bool {
+    File::open(path).is_ok()
+}
+
+#[must_use]
+pub fn dir_writable(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    let probe = path.join(format!(".forge-w-{}", std::process::id()));
+    match OpenOptions::new().create_new(true).write(true).open(&probe) {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// SELinux type from `ls -Z`, if any (e.g. `virt_content_t`).
+#[must_use]
+pub fn selinux_type(path: &Path) -> Option<String> {
+    let output = crate::cmd::command("ls")
+        .args(["-Zd", path.to_str()?])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // ls -Z: unconfined_u:object_r:virt_content_t:s0 filename
+    text.split_whitespace().find_map(|token| {
+        token
+            .split(':')
+            .find(|part| part.ends_with("_t") && *part != "s0")
+            .map(ToOwned::to_owned)
+    })
+}
+
+/// Effective UID from `/proc/self/status`. `sudo forge` is 0; that is not how Forge runs.
+#[must_use]
+pub fn effective_uid() -> u32 {
+    fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|text| {
+            text.lines().find_map(|line| {
+                line.strip_prefix("Uid:").and_then(|rest| {
+                    rest.split_whitespace()
+                        .nth(1)
+                        .and_then(|uid| uid.parse().ok())
+                })
+            })
+        })
+        .unwrap_or(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +196,24 @@ mod tests {
             paths.base_qcow2(Profile::Tsurugi).as_os_str(),
             "/tmp/forge-test/bases/tsurugi.qcow2"
         );
+    }
+
+    #[test]
+    fn dir_writable_and_readable_probes() {
+        let dir = std::env::temp_dir().join(format!("forge-paths-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("x");
+        fs::write(&file, b"ok").unwrap();
+        assert!(dir_writable(&dir));
+        assert!(is_readable(&file));
+        let mut perms = fs::metadata(&file).unwrap().permissions();
+        perms.set_mode(0o000);
+        fs::set_permissions(&file, perms).unwrap();
+        assert!(!is_readable(&file));
+        let mut perms = fs::metadata(&file).unwrap().permissions();
+        perms.set_mode(0o644);
+        fs::set_permissions(&file, perms).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_ne!(effective_uid(), 0);
     }
 }

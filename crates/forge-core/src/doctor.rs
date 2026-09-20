@@ -52,9 +52,12 @@ pub fn run() -> Result<DoctorReport> {
     checks.push(kvm_check());
     checks.push(group_check());
     checks.push(selinux_check());
+    checks.push(lab_storage_check());
     checks.push(boxes_rpm_check());
+    checks.push(boxes_system_source_check());
     checks.push(virt_manager_check());
     checks.push(bin_check("gpg", "GnuPG", Some("sudo dnf install gnupg2")));
+    checks.push(bin_check("curl", "curl", Some("sudo dnf install curl")));
     checks.push(seven_zip_check());
     checks.push(dongle_b_check());
 
@@ -257,6 +260,33 @@ fn boxes_rpm_check() -> Check {
     }
 }
 
+fn boxes_system_source_check() -> Check {
+    let path = crate::boxes::source_path();
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    if crate::boxes::has_system_uri(&text) {
+        Check {
+            status: CheckStatus::Ok,
+            name: "Boxes system URI".to_owned(),
+            detail: format!(
+                "{} → qemu:///system (restart Boxes if it was already open)",
+                path.display()
+            ),
+            fix: None,
+        }
+    } else {
+        Check {
+            status: CheckStatus::Fail,
+            name: "Boxes system URI".to_owned(),
+            detail: "Boxes is on qemu:///session only — Forge overlays live on qemu:///system"
+                .to_owned(),
+            fix: Some(format!(
+                "forge list  # writes {}\nthen fully quit and reopen GNOME Boxes",
+                path.display()
+            )),
+        }
+    }
+}
+
 fn virt_manager_check() -> Check {
     if exists("virt-manager") {
         Check {
@@ -317,6 +347,91 @@ fn dongle_b_check() -> Check {
             fix: Some("FORGE_DONGLE_B=vvvv:pppp  or  forge dev usb".to_owned()),
         },
     }
+}
+
+fn lab_storage_check() -> Check {
+    let paths = crate::paths::ForgePaths::discover();
+    if !paths.privileged_bases {
+        return Check {
+            status: CheckStatus::Ok,
+            name: "lab storage".to_owned(),
+            detail: format!("{} (FORGE_DATA_DIR, unprivileged)", paths.root.display()),
+            fix: None,
+        };
+    }
+    let vms_ok = crate::paths::dir_writable(&paths.vms);
+    let mut unread = Vec::new();
+    if let Ok(entries) = fs::read_dir(&paths.bases) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("qcow2")
+                && !crate::paths::is_readable(&path)
+            {
+                unread.push(
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+    let selinux_wrong = bases_wrong_selinux(&paths);
+    if vms_ok && unread.is_empty() && !selinux_wrong {
+        return Check {
+            status: CheckStatus::Ok,
+            name: "lab storage".to_owned(),
+            detail: format!(
+                "{} writable; bases readable (qemu + operator)",
+                paths.vms.display()
+            ),
+            fix: None,
+        };
+    }
+    let mut detail = Vec::new();
+    if !vms_ok {
+        detail.push(format!("{} missing or not writable", paths.vms.display()));
+    }
+    if !unread.is_empty() {
+        detail.push(format!(
+            "unreadable bases (need 0444, not 0440 root:qemu): {}",
+            unread.join(", ")
+        ));
+    }
+    if selinux_wrong {
+        detail
+            .push("bases need virt_content_t (libvirt backing); overlays virt_image_t".to_owned());
+    }
+    Check {
+        status: CheckStatus::Fail,
+        name: "lab storage".to_owned(),
+        detail: detail.join("; "),
+        fix: Some(
+            "forge pull <profile>  # sudo prepares /var/lib/forge; do not sudo forge".to_owned(),
+        ),
+    }
+}
+
+fn bases_wrong_selinux(paths: &crate::paths::ForgePaths) -> bool {
+    let Ok(entries) = fs::read_dir(&paths.bases) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("qcow2") {
+            continue;
+        }
+        let output = Command::new("ls")
+            .args(["-Z", path.to_str().unwrap_or("")])
+            .output()
+            .ok();
+        let text = output
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if text.contains("var_lib_t") || text.contains("virt_image_t") {
+            return true;
+        }
+    }
+    false
 }
 
 fn seven_zip_check() -> Check {
@@ -455,5 +570,7 @@ mod tests {
         let text = format_report(&report);
         assert!(text.contains("Forge doctor"));
         assert!(text.contains("Host"));
+        assert!(text.contains("lab storage"));
+        assert!(text.contains("Boxes system URI") || text.contains("GNOME Boxes"));
     }
 }

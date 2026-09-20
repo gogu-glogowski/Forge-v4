@@ -19,6 +19,7 @@ pub struct DomainSpec<'a> {
     pub profile: &'a str,
     pub role: Role,
     pub overlay: &'a str,
+    pub base: &'a str,
     pub base_digest: &'a str,
     pub memory_mib: u32,
     pub vcpus: u32,
@@ -29,6 +30,7 @@ pub fn domain_xml(spec: &DomainSpec<'_>) -> String {
     let name = escape(spec.name);
     let uuid = escape(spec.uuid);
     let overlay = escape(spec.overlay);
+    let base = escape(spec.base);
     let profile = escape(spec.profile);
     let digest = escape(spec.base_digest);
     let role = spec.role.id();
@@ -66,6 +68,13 @@ pub fn domain_xml(spec: &DomainSpec<'_>) -> String {
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' discard='unmap'/>
       <source file='{overlay}'/>
+      <backingStore type='file'>
+        <format type='qcow2'/>
+        <source file='{base}'>
+          <seclabel model='selinux' relabel='no'/>
+        </source>
+        <backingStore/>
+      </backingStore>
       <target dev='vda' bus='virtio'/>
     </disk>
 {nets}    <serial type='pty'>
@@ -278,6 +287,13 @@ pub fn is_forge_domain(xml: &str) -> bool {
     xml.contains(METADATA_NS)
 }
 
+/// Immutable bases cannot be relabeled; libvirt must skip the backing file.
+#[must_use]
+pub fn backing_relabel_skipped(xml: &str) -> bool {
+    let lower = xml.to_ascii_lowercase();
+    lower.contains("<backingstore") && lower.contains("relabel='no'")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +305,7 @@ mod tests {
             profile: "tsurugi",
             role: Role::Isolated,
             overlay: "/var/lib/forge/vms/tsurugi.qcow2",
+            base: "/var/lib/forge/bases/tsurugi.qcow2",
             base_digest: "sha256:deadbeef",
             memory_mib: 8192,
             vcpus: 4,
@@ -305,8 +322,12 @@ mod tests {
         let facts = inspect(&xml);
         assert_eq!(facts.forge_profile.as_deref(), Some("tsurugi"));
         assert_eq!(facts.forge_role.as_deref(), Some("isolated"));
-        assert_eq!(facts.disk_files.len(), 1);
-        assert!(facts.disk_files[0].ends_with("tsurugi.qcow2"));
+        assert!(xml.contains("<backingStore"));
+        assert!(xml.contains("relabel='no'"));
+        assert!(backing_relabel_skipped(&xml));
+        assert_eq!(facts.disk_files.len(), 2);
+        assert!(facts.disk_files[0].ends_with("vms/tsurugi.qcow2"));
+        assert!(facts.disk_files[1].ends_with("bases/tsurugi.qcow2"));
     }
 
     #[test]
@@ -329,6 +350,7 @@ mod tests {
             profile: "kali",
             role: Role::OsintClearnet,
             overlay: "/var/lib/forge/vms/kali.qcow2",
+            base: "/var/lib/forge/bases/kali.qcow2",
             base_digest: "sha256:deadbeef",
             memory_mib: 4096,
             vcpus: 2,
@@ -352,6 +374,7 @@ mod tests {
             profile: "whonix",
             role: Role::WhonixGw,
             overlay: "/var/lib/forge/vms/whonix-gateway.qcow2",
+            base: "/var/lib/forge/bases/whonix-gateway.qcow2",
             base_digest: "sha256:gw",
             memory_mib: 2048,
             vcpus: 2,
@@ -362,6 +385,7 @@ mod tests {
             profile: "whonix",
             role: Role::WhonixWs,
             overlay: "/var/lib/forge/vms/whonix-workstation.qcow2",
+            base: "/var/lib/forge/bases/whonix-workstation.qcow2",
             base_digest: "sha256:ws",
             memory_mib: 4096,
             vcpus: 2,

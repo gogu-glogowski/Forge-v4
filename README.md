@@ -4,7 +4,9 @@ Fedora-first KVM/libvirt lab. Greenfield after [v2](https://github.com/gogu-glog
 
 Contract: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-**This engine cut:** `forge pull` fetches and verifies all four profiles. SIFT’s OVA is behind SANS Portal — after login, `FORGE_SIFT_OVA=/path/to.ova forge pull sift`. Dongle **B** is a human cable: `forge start kali` / `whonix-gateway` attaches it live if plugged (pin `FORGE_DONGLE_B=vvvv:pppp` or `forge dev usb`). Isolated never gets it. Daily display is GNOME Boxes on `qemu:///system`; virt-manager is spare.
+**Now:** Tsurugi, Kali, and the Whonix pair `pull` / `create` / `start` / `stop` on Fedora 44. GNOME Boxes lists the overlays (`QEMU System` → `qemu:///system`). SIFT’s OVA is still behind SANS Portal: `FORGE_SIFT_OVA=/path/to.ova forge pull sift`.
+
+Dongle **B** is optional to boot — without it guests have no WAN, and that is expected. Plug it later; `forge start kali` / `whonix-gateway` attaches it live if present (pin `FORGE_DONGLE_B=vvvv:pppp` or `forge dev usb`). Isolated never gets it. One VM at a time: gateway **or** Kali, never both. virt-manager is spare.
 
 Five guests, four roles. Nothing else.
 
@@ -37,7 +39,7 @@ sudo systemctl enable --now libvirtd
 sudo usermod -aG libvirt "$USER"
 ```
 
-Daily display is **GNOME Boxes** (rpm, not Flatpak). Point it once at `qemu:///system`. Do not create VMs from Boxes — that is session + NAT, not this lab. **virt-manager** is the spare (XML, USB dongle **B**).
+Daily display is **GNOME Boxes** (rpm, not Flatpak). `forge` writes `~/.config/gnome-boxes/sources/QEMU System` (`qemu:///system`). If Boxes was already open, quit it fully and reopen. Do not create VMs from Boxes — that is session + NAT, not this lab. **virt-manager** is the spare (XML, USB dongle **B**).
 
 Log out and back in so the `libvirt` group applies.
 
@@ -77,7 +79,7 @@ No `vm plan`. No `image inspect` / `image fetch`. No background hash daemon.
 Each VM is an **overlay** on a hashed **base**. Bases are **not** libvirt domains, not in a Boxes or virt-manager pool, and get `chattr +i` after `pull` — they must not appear as VMs and must not be started. Only overlays show up, start, clone, and delete. Your work changes the overlay; that is not an alarm. `start`/`status` re-check the base digest and the **role** (NICs, dongle). They do not hash the overlay.
 
 ```bash
-forge pull kali          # download + verify upstream → immutable base qcow2
+forge pull kali          # download + verify (curl; resumes .part if the mirror drops)
 forge create kali        # overlay VM named kali, role osint-clearnet
 forge start kali         # refuses if base digest or role XML drifted
 forge status kali        # running + role/network proof
@@ -85,6 +87,10 @@ forge stop kali
 forge clone kali kali-2  # clone by VM name, not by file
 forge delete kali-2
 ```
+
+`pull` asks for **your** sudo password **immediately** (from a real terminal), then keeps **one root helper process** until the hashed qcow2 is installed (`chattr +i`). That is not a sudo timestamp and not NOPASSWD — the helper is already root, so a 16 GiB download will not prompt again at 5 a.m. Do **not** `sudo forge`. HTTP goes through curl (resume `.part`). A finished OVA/7z/bundle in cache is hashed and reused. Fetcher: `crates/forge-core/src/download.rs`.
+
+Do **not** `sudo forge`. Root’s `secure_path` misses `~/.local/bin/forge` (`command not found`), and overlays would be owned by root (`Permission denied (os error 13)`). Stay yourself; let Forge call `sudo` only for those few install/chmod steps.
 
 Same pattern: `tsurugi`, `sift`. Whonix is one pull and one create for the pair:
 

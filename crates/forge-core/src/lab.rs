@@ -43,6 +43,7 @@ impl Forge {
     pub fn open() -> Result<Self> {
         let paths = ForgePaths::discover();
         paths.ensure_user()?;
+        let _ = crate::boxes::ensure_system_source();
         let uri = virt::uri()?;
         Ok(Self { paths, uri })
     }
@@ -75,6 +76,16 @@ impl Forge {
                 profile.id()
             )));
         }
+        if pull::needs_privileged_prepare(&self.paths) {
+            progress::message(
+                progress,
+                format!(
+                    "sudo: prepare {} (overlay dir + readable bases) — do not sudo forge",
+                    self.paths.root.display()
+                ),
+            );
+        }
+        pull::ensure_lab_storage(&self.paths)?;
         pull::verify_base_digest(&self.paths, profile, progress)?;
         if profile == Profile::Whonix {
             if name.is_some() {
@@ -166,6 +177,7 @@ impl Forge {
             profile: profile.id(),
             role,
             overlay: &overlay.to_string_lossy(),
+            base: &base.to_string_lossy(),
             base_digest: &digest,
             memory_mib: memory,
             vcpus: profile.vcpus(),
@@ -196,9 +208,7 @@ impl Forge {
             )));
         }
         let _ = virt::ensure_vms_pool(&self.uri, &self.paths.vms);
-        if !self.paths.vms.exists() {
-            fs::create_dir_all(&self.paths.vms)?;
-        }
+        pull::ensure_lab_storage(&self.paths)?;
         progress::message(progress, format!("Creating overlay {}", overlay.display()));
         virt::qemu_img_create_overlay(base, &overlay)?;
         let ownership = Ownership {
@@ -222,6 +232,8 @@ impl Forge {
 
     pub fn start(&self, name: &str, progress: &Progress) -> Result<()> {
         let own = self.require_owned(name)?;
+        pull::ensure_lab_storage(&self.paths)?;
+        self.ensure_backing_seclabel(&own)?;
         pull::verify_file_digest(Path::new(&own.base), &own.base_digest, progress)?;
         self.assert_backing(&own)?;
         let xml = virt::dumpxml(&self.uri, name)?;
@@ -276,6 +288,7 @@ impl Forge {
 
     fn status_one(&self, name: &str) -> Result<VmStatus> {
         let ownership = self.require_owned(name)?;
+        let _ = self.ensure_backing_seclabel(&ownership);
         let power = virt::domstate(&self.uri, name)?;
         let xml = virt::dumpxml(&self.uri, name)?;
         let role_ok = xml::check_role(&xml, ownership.role()?);
@@ -363,6 +376,7 @@ impl Forge {
         }
         let role = profile.role();
         progress::message(progress, format!("Cloning overlay {src} → {dst}"));
+        pull::ensure_lab_storage(&self.paths)?;
         let digest = pull::verify_base_digest(&self.paths, profile, progress)?;
         let src_overlay = std::path::PathBuf::from(&own.overlay);
         let dst_overlay = self.paths.overlay_qcow2(dst);
@@ -377,6 +391,7 @@ impl Forge {
             profile: profile.id(),
             role,
             overlay: &dst_overlay.to_string_lossy(),
+            base: &own.base,
             base_digest: &digest,
             memory_mib: profile.memory_mib(),
             vcpus: profile.vcpus(),
@@ -458,6 +473,35 @@ impl Forge {
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
+    }
+
+    fn ensure_backing_seclabel(&self, own: &Ownership) -> Result<()> {
+        if !virt::domain_exists(&self.uri, &own.name)? {
+            return Ok(());
+        }
+        let xml = virt::dumpxml(&self.uri, &own.name)?;
+        if xml::backing_relabel_skipped(&xml) {
+            return Ok(());
+        }
+        let profile = own.profile()?;
+        let memory = if own.name == WHONIX_WS_NAME {
+            profile.workstation_memory_mib()
+        } else {
+            profile.memory_mib()
+        };
+        let spec = DomainSpec {
+            name: &own.name,
+            uuid: &own.uuid,
+            profile: profile.id(),
+            role: own.role()?,
+            overlay: &own.overlay,
+            base: &own.base,
+            base_digest: &own.base_digest,
+            memory_mib: memory,
+            vcpus: profile.vcpus(),
+        };
+        virt::define_xml(&self.uri, &xml::domain_xml(&spec))?;
+        Ok(())
     }
 
     fn assert_backing(&self, own: &Ownership) -> Result<()> {
