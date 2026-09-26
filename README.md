@@ -2,9 +2,7 @@
 
 Fedora-first KVM/libvirt lab. Greenfield after [v2](https://github.com/gogu-glogowski/Forge-v2) and [v3](https://github.com/gogu-glogowski/Forge-v3) — we keep fail-closed ownership and signed images, not the command maze.
 
-Contract: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-
-**Now:** Tsurugi, Kali, and the Whonix pair `pull` / `create` / `start` / `stop` on Fedora 44. GNOME Boxes lists the overlays (`QEMU System` → `qemu:///system`). SIFT’s OVA is still behind SANS Portal: `FORGE_SIFT_OVA=/path/to.ova forge pull sift`.
+**Now:** Tsurugi, Kali, and the Whonix pair `pull` / `create` / `start` / `stop` on Fedora 44. GNOME Boxes lists the overlays (`QEMU System` → `qemu:///system`). SIFT's OVA is still behind SANS Portal: `FORGE_SIFT_OVA=/path/to.ova forge pull sift`.
 
 Dongle **B** is optional to boot — without it guests have no WAN, and that is expected. Plug it later; `forge start kali` / `whonix-gateway` attaches it live if present (pin `FORGE_DONGLE_B=vvvv:pppp` or `forge dev usb`). Isolated never gets it. One VM at a time: gateway **or** Kali, never both. virt-manager is spare.
 
@@ -88,9 +86,9 @@ forge clone kali kali-2  # clone by VM name, not by file
 forge delete kali-2
 ```
 
-`pull` asks for **your** sudo password **immediately** (from a real terminal), then keeps **one root helper process** until the hashed qcow2 is installed (`chattr +i`). That is not a sudo timestamp and not NOPASSWD — the helper is already root, so a 16 GiB download will not prompt again at 5 a.m. Do **not** `sudo forge`. HTTP goes through curl (resume `.part`). A finished OVA/7z/bundle in cache is hashed and reused. Fetcher: `crates/forge-core/src/download.rs`.
+`pull` asks for **your** sudo password **immediately** (from a real terminal), then keeps **one root helper process** until the hashed qcow2 is installed (`chattr +i`). That is not a sudo timestamp and not NOPASSWD — the helper is already root, so a 16 GiB download will not prompt again at 5 a.m. Do **not** `sudo forge`. HTTP goes through curl (resume `.part`). A finished OVA/7z/bundle in cache is hashed and reused. Fetcher: `crates/forge-core/src/download.rs`.
 
-Do **not** `sudo forge`. Root’s `secure_path` misses `~/.local/bin/forge` (`command not found`), and overlays would be owned by root (`Permission denied (os error 13)`). Stay yourself; let Forge call `sudo` only for those few install/chmod steps.
+Do **not** `sudo forge`. Root's `secure_path` misses `~/.local/bin/forge` (`command not found`), and overlays would be owned by root (`Permission denied (os error 13)`). Stay yourself; let Forge call `sudo` only for those few install/chmod steps.
 
 Same pattern: `tsurugi`, `sift`. Whonix is one pull and one create for the pair:
 
@@ -101,9 +99,9 @@ forge start whonix-gateway
 forge start whonix-workstation
 ```
 
-`forge list` — one inventory (proposal, replaces v2 `profile list` + `image list`): which profiles exist, whether the qcow2 is on disk, VM names.
+`forge list` — one inventory: which profiles exist, whether the qcow2 is on disk, VM names.
 
-`forge status` with no name — whole lab, including “is this NIC allowed for this role?” and “is the dongle in two VMs?”.
+`forge status` with no name — whole lab, including "is this NIC allowed for this role?" and "is the dongle in two VMs?".
 
 ---
 
