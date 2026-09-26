@@ -60,6 +60,7 @@ pub fn run() -> Result<DoctorReport> {
     checks.push(bin_check("curl", "curl", Some("sudo dnf install curl")));
     checks.push(seven_zip_check());
     checks.push(dongle_b_check());
+    checks.push(host_cables_check());
 
     let system = virt::try_connect(SYSTEM_URI);
     match &system {
@@ -305,6 +306,46 @@ fn virt_manager_check() -> Check {
     }
 }
 
+fn host_cables_check() -> Check {
+    match crate::hostnet::audit() {
+        Err(error) => Check {
+            status: CheckStatus::Fail,
+            name: "host cables".to_owned(),
+            detail: error.to_string(),
+            fix: None,
+        },
+        Ok(audit) if !audit.held.is_empty() => Check {
+            status: CheckStatus::Fail,
+            name: "host cables".to_owned(),
+            detail: format!("host still holds dongle B ({})", audit.held.join(", ")),
+            fix: Some("forge dev cables".to_owned()),
+        },
+        Ok(audit) if !audit.foreign_defaults.is_empty() => Check {
+            status: CheckStatus::Warn,
+            name: "host cables".to_owned(),
+            detail: format!(
+                "default route is not cable A: {}",
+                audit.foreign_defaults.join(", ")
+            ),
+            fix: None,
+        },
+        Ok(audit) => Check {
+            status: CheckStatus::Ok,
+            name: "host cables".to_owned(),
+            detail: one_line(&audit.summary),
+            fix: None,
+        },
+    }
+}
+
+fn one_line(summary: &str) -> String {
+    summary
+        .lines()
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn dongle_b_check() -> Check {
     let paths = crate::paths::ForgePaths::discover();
     let pin = crate::usb::load_pin(&paths).ok().flatten();
@@ -535,7 +576,7 @@ pub fn format_report(report: &DoctorReport) -> String {
         out.push_str("\nHost is ready for Forge.\n");
     } else {
         out.push_str(
-            "\nHost is not ready. Install the packages above; Forge will not change the host for you.\n",
+            "\nHost is not ready. Doctor does not change the host. `forge dev cables` takes dongle B off Fedora.\n",
         );
     }
     out

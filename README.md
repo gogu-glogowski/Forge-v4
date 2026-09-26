@@ -6,7 +6,7 @@ Greenfield after [v2](https://github.com/gogu-glogowski/Forge-v2) and [v3](https
 
 **Now:** Tsurugi, Kali, and the Whonix pair `pull` / `create` / `start` / `stop` on Fedora 44. GNOME Boxes lists the guests (`QEMU System` → `qemu:///system`). SIFT's OVA is behind SANS Portal: `FORGE_SIFT_OVA=/path/to.ova forge pull sift`.
 
-Dongle **B** is optional to boot. Plug it later; `forge start kali` / `whonix-gateway` uses it if present (pin `FORGE_DONGLE_B=vvvv:pppp` or `forge dev usb`). Isolated guests never get it. One WAN guest at a time: gateway **or** Kali, never both. virt-manager is spare.
+Dongle **B** is optional to boot. `forge start kali` / `whonix-gateway` uses it if present. Boxes and virt-manager Play do not: the guest stays up until `forge connect <vm>`, and `forge disconnect <vm>` takes the dongle back without shutting down. Isolated guests never get it. One WAN guest at a time: gateway **or** Kali, never both. Pin: `FORGE_DONGLE_B=vvvv:pppp` or `forge dev usb`. virt-manager is spare.
 
 Five guests, four roles.
 
@@ -52,7 +52,7 @@ Forge uses **`qemu:///system`**. Do not run `sudo forge`.
 **Hardware**
 
 - Onboard Ethernet = **A** — only the host, only while installing/updating Fedora, libvirt, Rust, Forge, and while `forge pull` downloads images. Then unplug (or `nmcli device disconnect`).
-- USB-C → Ethernet dongle (preferred) or USB Wi-Fi = **B** — only VMs. Cables are the default; Wi-Fi is the same role.
+- USB-C → Ethernet dongle (preferred) or USB Wi-Fi = **B** — only VMs. Cables are the default; Wi-Fi is the same role. `forge dev cables` takes B off the host without starting a VM.
 
 Build from source (no COPR yet):
 
@@ -78,6 +78,8 @@ If `forge dev doctor` is not green, stop.
 forge pull kali          # fetch image into a base
 forge create kali        # overlay VM named kali, role osint-clearnet
 forge start kali
+forge connect kali        # dongle B while the guest is already running
+forge disconnect kali
 forge status kali
 forge stop kali
 forge clone kali kali-2
@@ -111,6 +113,7 @@ forge dev xml <vm>         # domain dump
 forge dev create --dry-run …
 forge dev delete --dry-run …
 forge dev usb              # dongle B pin
+forge dev cables           # take dongle B off the host
 ```
 
 `forge delete` is a user command. `--dry-run` is `dev`.

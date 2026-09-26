@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::{ForgeError, Result};
+use crate::hostnet;
 use crate::ownership::{self, Ownership};
 use crate::paths::ForgePaths;
 use crate::profile::{Profile, SYSTEM_URI, WHONIX_GW_NAME, WHONIX_WS_NAME};
@@ -30,6 +31,16 @@ pub struct VmStatus {
     pub ownership: Ownership,
     pub power: VmPower,
     pub role_ok: Result<()>,
+    /// USB dongle B currently in the domain XML, if any.
+    pub dongle: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DongleLink {
+    Connected(String),
+    Already(String),
+    Disconnected,
+    Absent,
 }
 
 #[derive(Debug, Clone)]
@@ -247,6 +258,8 @@ impl Forge {
                 ));
             }
         }
+        let report = hostnet::enforce()?;
+        progress::message(progress, report.trim_end());
         virt::start(&self.uri, name)?;
         self.maybe_attach_dongle_b(name, own.role()?, progress)?;
         Ok(())
@@ -264,6 +277,7 @@ impl Forge {
             }
         }
         let _ = self.maybe_detach_dongle_b(name, own.role()?);
+        hostnet::enforce()?;
         if force {
             virt::destroy(&self.uri, name)?;
         } else {
@@ -291,12 +305,116 @@ impl Forge {
         let _ = self.ensure_backing_seclabel(&ownership);
         let power = virt::domstate(&self.uri, name)?;
         let xml = virt::dumpxml(&self.uri, name)?;
+        let facts = xml::inspect(&xml);
         let role_ok = xml::check_role(&xml, ownership.role()?);
+        let dongle = if facts.usb_ids.is_empty() {
+            None
+        } else {
+            Some(
+                facts
+                    .usb_ids
+                    .iter()
+                    .map(|id| id.display())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
+        };
         Ok(VmStatus {
             ownership,
             power,
             role_ok,
+            dongle,
         })
+    }
+
+    /// Live-attach dongle B. The VM must already be running (Boxes or `forge start`).
+    /// Does not write the device into the persistent definition, so the next boot is blind.
+    pub fn connect_dongle(&self, name: &str, progress: &Progress) -> Result<DongleLink> {
+        let own = self.require_owned(name)?;
+        let role = own.role()?;
+        if !role.may_hold_dongle() {
+            return Err(ForgeError::Role(format!(
+                "{name} ({}) cannot hold dongle B; only kali and whonix-gateway",
+                role.id()
+            )));
+        }
+        let power = virt::domstate(&self.uri, name)?;
+        if !power.is_active() {
+            return Err(ForgeError::Role(format!(
+                "{name} is {}; open it in Boxes or `forge start {name}` first (connect does not power the VM on)",
+                power.as_str()
+            )));
+        }
+        pull::ensure_lab_storage(&self.paths)?;
+        self.ensure_backing_seclabel(&own)?;
+        pull::verify_file_digest(Path::new(&own.base), &own.base_digest, progress)?;
+        self.assert_backing(&own)?;
+        let xml = virt::dumpxml(&self.uri, name)?;
+        xml::check_role(&xml, role)?;
+        self.assert_dongle_exclusive(Some(name))?;
+        let facts = xml::inspect(&xml);
+        let id = match usb::resolve_plugged(&self.paths)? {
+            Resolve::Plugged(id) => id,
+            Resolve::PinnedMissing(id) => {
+                return Err(ForgeError::Host(format!(
+                    "dongle B {} is not plugged in",
+                    id.display()
+                )));
+            }
+            Resolve::None => {
+                return Err(ForgeError::Host("dongle B is not plugged in".to_owned()));
+            }
+        };
+        if facts.usb_ids.contains(&id) {
+            return Ok(DongleLink::Already(id.display()));
+        }
+        if let Some(other) = self.dongle_holder(Some(id), Some(name))? {
+            return Err(ForgeError::Role(format!(
+                "dongle B {} is already in {other}; `forge disconnect {other}` first",
+                id.display()
+            )));
+        }
+        let report = hostnet::enforce()?;
+        progress::message(progress, report.trim_end());
+        progress::message(
+            progress,
+            format!("attaching dongle B {} to {name} (live)", id.display()),
+        );
+        virt::attach_device_live(&self.uri, name, &id.hostdev_xml())?;
+        Ok(DongleLink::Connected(id.display()))
+    }
+
+    /// Take dongle B back. The VM keeps running. Also strips a persistent hostdev
+    /// if one was saved outside Forge.
+    pub fn disconnect_dongle(&self, name: &str) -> Result<DongleLink> {
+        let own = self.require_owned(name)?;
+        let role = own.role()?;
+        let xml = virt::dumpxml(&self.uri, name)?;
+        let ids = xml::inspect(&xml).usb_ids;
+        if ids.is_empty() {
+            if !role.may_hold_dongle() {
+                return Err(ForgeError::Role(format!(
+                    "{name} ({}) cannot hold dongle B; only kali and whonix-gateway",
+                    role.id()
+                )));
+            }
+            hostnet::enforce()?;
+            return Ok(DongleLink::Absent);
+        }
+        let power = virt::domstate(&self.uri, name)?;
+        let inactive = virt::dumpxml_inactive(&self.uri, name).unwrap_or_default();
+        let inactive_ids = xml::inspect(&inactive).usb_ids;
+        for id in &ids {
+            let device = id.hostdev_xml();
+            if power.is_active() {
+                virt::detach_device_live(&self.uri, name, &device)?;
+            }
+            if inactive_ids.contains(id) {
+                virt::detach_device_config(&self.uri, name, &device)?;
+            }
+        }
+        hostnet::enforce()?;
+        Ok(DongleLink::Disconnected)
     }
 
     pub fn list(&self) -> Result<Vec<InventoryRow>> {
@@ -629,6 +747,11 @@ impl Forge {
     pub fn usb_report(&self) -> String {
         usb::format_dev_list(&self.paths)
     }
+
+    pub fn enforce_cables(&self) -> Result<String> {
+        let _ = self;
+        hostnet::enforce()
+    }
 }
 
 fn validate_vm_name(name: &str) -> Result<()> {
@@ -676,9 +799,10 @@ pub fn format_status(rows: &[VmStatus]) -> String {
             row.power.as_str(),
             row.ownership.role
         ));
+        let dongle = row.dongle.as_deref().unwrap_or("off");
         match &row.role_ok {
-            Ok(()) => out.push_str("  role=ok\n"),
-            Err(error) => out.push_str(&format!("  ROLE FAIL: {error}\n")),
+            Ok(()) => out.push_str(&format!("  role=ok  b={dongle}\n")),
+            Err(error) => out.push_str(&format!("  ROLE FAIL: {error}  b={dongle}\n")),
         }
     }
     if out.is_empty() {

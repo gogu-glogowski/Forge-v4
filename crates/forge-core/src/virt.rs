@@ -94,6 +94,10 @@ pub fn dumpxml(uri: &str, domain: &str) -> Result<String> {
     virsh(uri, &["dumpxml", domain])
 }
 
+pub fn dumpxml_inactive(uri: &str, domain: &str) -> Result<String> {
+    virsh(uri, &["dumpxml", domain, "--inactive"])
+}
+
 pub fn attach_device_live(uri: &str, domain: &str, xml: &str) -> Result<()> {
     let tmp = tempfile_xml(xml)?;
     let result = virsh(uri, &["attach-device", domain, &tmp, "--live"]);
@@ -104,6 +108,13 @@ pub fn attach_device_live(uri: &str, domain: &str, xml: &str) -> Result<()> {
 pub fn detach_device_live(uri: &str, domain: &str, xml: &str) -> Result<()> {
     let tmp = tempfile_xml(xml)?;
     let result = virsh(uri, &["detach-device", domain, &tmp, "--live"]);
+    let _ = fs::remove_file(&tmp);
+    result.map(|_| ())
+}
+
+pub fn detach_device_config(uri: &str, domain: &str, xml: &str) -> Result<()> {
+    let tmp = tempfile_xml(xml)?;
+    let result = virsh(uri, &["detach-device", domain, &tmp, "--config"]);
     let _ = fs::remove_file(&tmp);
     result.map(|_| ())
 }
@@ -211,7 +222,15 @@ pub fn qemu_img_convert(src: &Path, dst: &Path) -> Result<()> {
 }
 
 pub fn qemu_img_backing(overlay: &Path) -> Result<Option<String>> {
-    let info = cmd::run_checked("qemu-img", &["info", "--output=json", &path_str(overlay)?])?;
+    let info = cmd::run_checked(
+        "qemu-img",
+        &[
+            "info",
+            "--force-share",
+            "--output=json",
+            &path_str(overlay)?,
+        ],
+    )?;
     Ok(json_string_field(&info, "backing-filename"))
 }
 

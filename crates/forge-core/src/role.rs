@@ -9,6 +9,12 @@ pub enum Role {
 }
 
 impl Role {
+    /// Kali and the Whonix gateway may hold USB dongle B. Nothing else may.
+    #[must_use]
+    pub fn may_hold_dongle(self) -> bool {
+        matches!(self, Self::WhonixGw | Self::OsintClearnet)
+    }
+
     #[must_use]
     pub fn id(self) -> &'static str {
         match self {
@@ -81,5 +87,18 @@ impl VmPower {
             self,
             Self::Running | Self::Blocked | Self::Paused | Self::Shutdown
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Role;
+
+    #[test]
+    fn only_kali_and_gateway_may_hold_dongle() {
+        assert!(Role::OsintClearnet.may_hold_dongle());
+        assert!(Role::WhonixGw.may_hold_dongle());
+        assert!(!Role::WhonixWs.may_hold_dongle());
+        assert!(!Role::Isolated.may_hold_dongle());
     }
 }

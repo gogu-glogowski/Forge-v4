@@ -139,6 +139,7 @@ pub struct XmlFacts {
     pub has_virbr0: bool,
     pub forge_whonix_nets: usize,
     pub hostdev_usb: usize,
+    pub hostdev_pci: usize,
     pub usb_ids: Vec<crate::usb::UsbId>,
     pub disk_files: Vec<String>,
     pub forge_profile: Option<String>,
@@ -164,7 +165,8 @@ pub fn inspect(xml: &str) -> XmlFacts {
             let needle = WHONIX_NET;
             lower.matches(needle).count()
         },
-        hostdev_usb: hostdev_usb_count(&lower),
+        hostdev_usb: hostdev_type_count(&lower, "usb"),
+        hostdev_pci: hostdev_type_count(&lower, "pci"),
         ..XmlFacts::default()
     };
     facts.usb_ids = crate::usb::ids_in_xml(xml);
@@ -180,15 +182,16 @@ fn count_tag(xml: &str, tag: &str) -> usize {
     xml.matches(tag).count()
 }
 
-fn hostdev_usb_count(xml: &str) -> usize {
-    // Count <hostdev ... type='usb'
+fn hostdev_type_count(xml: &str, kind: &str) -> usize {
+    let quoted = format!("type='{kind}'");
+    let double = format!("type=\"{kind}\"");
     let mut n = 0;
     let mut rest = xml;
     while let Some(i) = rest.find("<hostdev") {
         let chunk = &rest[i..];
         let end = chunk.find('>').unwrap_or(chunk.len());
         let head = &chunk[..end];
-        if head.contains("type='usb'") || head.contains("type=\"usb\"") {
+        if head.contains(&quoted) || head.contains(&double) {
             n += 1;
         }
         rest = &chunk[1..];
@@ -235,6 +238,12 @@ pub fn check_role(xml: &str, expected: Role) -> Result<()> {
     if facts.has_default_network || facts.has_user_net || facts.has_passt || facts.has_virbr0 {
         return Err(ForgeError::Role(
             "NAT leaked into domain XML (default/user/passt/virbr0)".to_owned(),
+        ));
+    }
+    if facts.hostdev_pci != 0 {
+        return Err(ForgeError::Role(
+            "PCI hostdev would move cable A (or another PCI device) into the guest; it stays on the host"
+                .to_owned(),
         ));
     }
     match expected {
@@ -408,5 +417,15 @@ mod tests {
         xml.push_str(&crate::usb::UsbId::parse("0b95:1790").unwrap().hostdev_xml());
         let err = check_role(&xml, Role::Isolated).expect_err("usb");
         assert!(err.to_string().contains("USB"));
+    }
+
+    #[test]
+    fn pci_hostdev_stays_on_the_host() {
+        let mut xml = domain_xml(&isolated_spec());
+        xml.push_str(
+            "<hostdev mode='subsystem' type='pci' managed='yes'><source><address domain='0x0000' bus='0x0a' slot='0x00' function='0x0'/></source></hostdev>\n",
+        );
+        let err = check_role(&xml, Role::Isolated).expect_err("pci");
+        assert!(err.to_string().contains("PCI"));
     }
 }

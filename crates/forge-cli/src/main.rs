@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use forge_core::doctor;
 use forge_core::progress::{ProgressEvent, format_bytes};
-use forge_core::{APP_NAME, Forge, ForgeError, Profile, format_list, format_status};
+use forge_core::{APP_NAME, DongleLink, Forge, ForgeError, Profile, format_list, format_status};
 
 #[derive(Parser)]
 #[command(
@@ -38,6 +38,10 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Attach dongle B to a running VM (kali or whonix-gateway). Does not power it on
+    Connect { vm: String },
+    /// Remove dongle B. The VM keeps running
+    Disconnect { vm: String },
     /// Running state plus role/network proof
     Status { vm: Option<String> },
     /// One inventory: profiles, base on disk, VM names
@@ -73,6 +77,8 @@ enum DevCommands {
     },
     /// USB net devices and dongle B pin
     Usb,
+    /// Keep cable A as the only host uplink and take USB dongle B off NetworkManager
+    Cables,
 }
 
 fn main() -> ExitCode {
@@ -128,7 +134,7 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
             }
             if profile == Profile::Whonix {
                 println!(
-                    "Start gateway first, then workstation. Dongle B on the gateway via virt-manager."
+                    "Start the gateway first (`forge start whonix-gateway`), then the workstation. Only the gateway receives dongle B."
                 );
             } else {
                 println!(
@@ -157,6 +163,26 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
                 println!("destroyed {vm}");
             } else {
                 println!("shutdown {vm}");
+            }
+            Ok(())
+        }
+        Commands::Connect { vm } => {
+            let forge = Forge::open()?;
+            match forge.connect_dongle(&vm, &cli_progress())? {
+                DongleLink::Connected(id) => println!("connected dongle B {id} to {vm}"),
+                DongleLink::Already(id) => println!("dongle B {id} is already in {vm}"),
+                DongleLink::Disconnected | DongleLink::Absent => {}
+            }
+            Ok(())
+        }
+        Commands::Disconnect { vm } => {
+            let forge = Forge::open()?;
+            match forge.disconnect_dongle(&vm)? {
+                DongleLink::Disconnected => {
+                    println!("disconnected dongle B from {vm}; the VM stays up");
+                }
+                DongleLink::Absent => println!("dongle B is not in {vm}"),
+                DongleLink::Connected(_) | DongleLink::Already(_) => {}
             }
             Ok(())
         }
@@ -233,6 +259,11 @@ fn run_dev(command: DevCommands) -> Result<(), ForgeError> {
         DevCommands::Usb => {
             let forge = Forge::open_paths(forge_core::ForgePaths::discover())?;
             print!("{}", forge.usb_report());
+            Ok(())
+        }
+        DevCommands::Cables => {
+            let forge = Forge::open_paths(forge_core::ForgePaths::discover())?;
+            print!("{}", forge.enforce_cables()?);
             Ok(())
         }
     }

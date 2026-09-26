@@ -14,6 +14,8 @@ fn help_is_user_mode_only() {
     assert!(text.contains("clone"));
     assert!(text.contains("start"));
     assert!(text.contains("stop"));
+    assert!(text.contains("connect"));
+    assert!(text.contains("disconnect"));
     assert!(text.contains("status"));
     assert!(text.contains("list"));
     assert!(text.contains("delete"));
@@ -22,8 +24,11 @@ fn help_is_user_mode_only() {
         "doctor must not appear in user --help:\n{text}"
     );
     assert!(
-        !text.to_ascii_lowercase().contains("dev"),
-        "dev must be hidden from user --help:\n{text}"
+        !text.lines().any(|line| {
+            line.split_whitespace()
+                .any(|word| word == "dev" || word == "`dev`")
+        }),
+        "dev command must be hidden from user --help:\n{text}"
     );
 }
 
@@ -53,4 +58,5 @@ fn dev_help_exists() {
     assert!(text.contains("doctor"));
     assert!(text.contains("xml"));
     assert!(text.contains("usb"));
+    assert!(text.contains("cables"));
 }
