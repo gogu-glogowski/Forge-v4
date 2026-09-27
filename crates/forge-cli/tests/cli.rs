@@ -59,4 +59,5 @@ fn dev_help_exists() {
     assert!(text.contains("xml"));
     assert!(text.contains("usb"));
     assert!(text.contains("cables"));
+    assert!(text.contains("hook"));
 }

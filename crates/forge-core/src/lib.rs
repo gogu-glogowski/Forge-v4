@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod download;
 mod error;
 mod hash;
+mod hook;
 mod hostnet;
 mod lab;
 mod ownership;
@@ -23,6 +24,7 @@ pub use boxes::{
     SourceStatus as BoxesSourceStatus, ensure_system_source as ensure_boxes_system_source,
 };
 pub use error::{ForgeError, Result};
+pub use hook::root_entry;
 pub use lab::{Created, DongleLink, Forge, InventoryRow, VmStatus, format_list, format_status};
 pub use paths::{ForgePaths, effective_uid};
 pub use profile::{APP_NAME, Profile, SYSTEM_URI};

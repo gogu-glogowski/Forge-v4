@@ -226,7 +226,7 @@ fn wan_net_xml(egress: Option<&str>) -> String {
     }
 }
 
-fn wan_xml_ok(xml: &str, egress: Option<&str>) -> bool {
+pub(crate) fn wan_xml_ok(xml: &str, egress: Option<&str>) -> bool {
     let lower = xml.to_ascii_lowercase();
     if !lower.contains("10.0.2.2") || !lower.contains("virbr-forgewan") {
         return false;
@@ -238,8 +238,7 @@ fn wan_xml_ok(xml: &str, egress: Option<&str>) -> bool {
         Some(dev) => {
             let needle = format!("dev='{}'", dev.to_ascii_lowercase());
             let needle_dq = format!("dev=\"{}\"", dev.to_ascii_lowercase());
-            lower.contains("mode='nat'")
-                && (lower.contains(&needle) || lower.contains(&needle_dq))
+            lower.contains("mode='nat'") && (lower.contains(&needle) || lower.contains(&needle_dq))
         }
         None => !lower.contains("mode='nat'") && !lower.contains("<interface"),
     }

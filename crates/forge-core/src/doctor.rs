@@ -62,6 +62,7 @@ pub fn run() -> Result<DoctorReport> {
     checks.push(dongle_b_check());
     checks.push(host_cables_check());
     checks.push(libvirt_forward_check());
+    checks.push(qemu_hook_check());
 
     let system = virt::try_connect(SYSTEM_URI);
     match &system {
@@ -219,6 +220,20 @@ fn group_check() -> Check {
             detail: format!("{user} is not in libvirt"),
             fix: Some("sudo usermod -aG libvirt \"$USER\" && log out".to_owned()),
         }
+    }
+}
+
+fn qemu_hook_check() -> Check {
+    let report = crate::hook::doctor();
+    let status = match report.kind {
+        crate::hook::HookDoctorKind::Ok => CheckStatus::Ok,
+        crate::hook::HookDoctorKind::Fail => CheckStatus::Fail,
+    };
+    Check {
+        status,
+        name: "qemu hook".to_owned(),
+        detail: report.detail,
+        fix: report.fix,
     }
 }
 

@@ -92,63 +92,58 @@ pub fn lease_usb(iface: &str) -> Result<String> {
             "{iface} is not dongle B; cable A stays on Fedora"
         )));
     }
-    release_usb()?;
-    nm(&[
-        "connection",
-        "add",
-        "type",
-        "ethernet",
-        "ifname",
-        iface,
-        "con-name",
-        B_CONNECTION,
-        "ipv4.method",
-        "auto",
-        "ipv4.never-default",
-        "yes",
-        "ipv6.method",
-        "disabled",
-        "connection.autoconnect",
-        "no",
-    ])?;
-    nm(&[
-        "connection",
-        "modify",
-        B_CONNECTION,
-        "ipv4.routing-rules",
-        "priority 100 from 10.0.2.0/24 table 100",
-    ])?;
-    nm(&["connection", "up", B_CONNECTION])?;
-    let options = nm(&["-g", "DHCP4.OPTION", "device", "show", iface]).unwrap_or_default();
-    let Some(gw) = dhcp_router(&options) else {
-        release_usb()?;
-        return Err(ForgeError::Host(format!(
-            "dongle B ({iface}) got no IPv4 router from DHCP"
-        )));
-    };
-    nm(&[
-        "connection",
-        "modify",
-        B_CONNECTION,
-        "ipv4.routes",
-        &format!("0.0.0.0/0 {gw} table=100"),
-    ])?;
-    nm(&["connection", "up", B_CONNECTION])?;
-    let table = cmd::run_checked("ip", &["route", "show", "table", "100"]).unwrap_or_default();
-    if !policy_default_via(&table, iface, &gw) {
-        release_usb()?;
-        return Err(ForgeError::Host(format!(
-            "dongle B ({iface}) did not install the 10.0.2.0/24 route via {gw}"
-        )));
-    }
-    let after = observe()?;
-    if after.defaults.contains(iface) {
-        release_usb()?;
-        return Err(ForgeError::Host(format!(
-            "dongle B ({iface}) became Fedora's default route; refused"
-        )));
-    }
-    Ok(gw.to_owned())
+    with_net_lock(|| {
+        release_usb_inner()?;
+        wait_until_connection_gone(B_CONNECTION)?;
+        add_forge_b(iface)?;
+        nm(&[
+            "connection",
+            "modify",
+            B_CONNECTION,
+            "ipv4.routing-rules",
+            "priority 100 from 10.0.2.0/24 table 100",
+        ])?;
+        activate_and_wait(iface)?;
+        let options = nm(&["-g", "DHCP4.OPTION", "device", "show", iface]).unwrap_or_default();
+        let gw = dhcp_router(&options).or_else(|| device_gateway(iface));
+        let Some(gw) = gw else {
+            let _ = release_usb_inner();
+            return Err(ForgeError::Host(format!(
+                "dongle B ({iface}) got no IPv4 router from DHCP"
+            )));
+        };
+        nm(&[
+            "connection",
+            "modify",
+            B_CONNECTION,
+            "ipv4.routes",
+            &format!("0.0.0.0/0 {gw} table=100"),
+        ])?;
+        // A second `connection up` makes nmcli tear the lease down. Reapply, and
+        // install the table-100 route directly so a flaky client cannot drop it.
+        let _ = nm(&["device", "reapply", iface]);
+        let _ = cmd::run_checked(
+            "ip",
+            &[
+                "route", "replace", "default", "via", &gw, "dev", iface, "table", "100",
+            ],
+        );
+        let table = cmd::run_checked("ip", &["route", "show", "table", "100"]).unwrap_or_default();
+        if !policy_default_via(&table, iface, &gw) {
+            let _ = release_usb_inner();
+            return Err(ForgeError::Host(format!(
+                "dongle B ({iface}) did not install the 10.0.2.0/24 route via {gw}"
+            )));
+        }
+        let after = observe()?;
+        if after.defaults.contains(iface) {
+            let _ = release_usb_inner();
+            return Err(ForgeError::Host(format!(
+                "dongle B ({iface}) became Fedora's default route; refused"
+            )));
+        }
+        Ok(gw)
+    })
 }
 
 /// Fedora's libvirt zone drops forwarded packets until this is on. The gateway
@@ -196,13 +191,48 @@ pub fn libvirt_forwards() -> Option<bool> {
     }
 }
 
+/// Table 100 already sends the gateway range out this USB NIC, and that NIC
+/// is not Fedora's default route.
+#[must_use]
+pub fn usb_lease_current(iface: &str) -> bool {
+    if !iface_ok(iface) {
+        return false;
+    }
+    let Ok(snap) = observe() else {
+        return false;
+    };
+    if snap.defaults.contains(iface) {
+        return false;
+    }
+    let Some(nic) = snap.nics.iter().find(|nic| nic.name == iface) else {
+        return false;
+    };
+    if nic.kind != Kind::UsbNet {
+        return false;
+    }
+    let Ok(table) = cmd::run_checked("ip", &["route", "show", "table", "100"]) else {
+        return false;
+    };
+    table.lines().any(|line| {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        parts.first() == Some(&"default") && parts.windows(2).any(|pair| pair == ["dev", iface])
+    })
+}
+
 pub fn release_usb() -> Result<()> {
+    with_net_lock(release_usb_inner)
+}
+
+fn release_usb_inner() -> Result<()> {
     let _ = nm(&["connection", "down", B_CONNECTION]);
     match nm(&["connection", "delete", B_CONNECTION]) {
         Ok(_) => Ok(()),
         Err(error) => {
             let text = error.to_string().to_ascii_lowercase();
-            if text.contains("unknown") || text.contains("not found") || text.contains("nie znaleziono")
+            if text.contains("unknown")
+                || text.contains("not found")
+                || text.contains("nie znaleziono")
+                || text.contains("does not exist")
             {
                 Ok(())
             } else {
@@ -210,6 +240,178 @@ pub fn release_usb() -> Result<()> {
             }
         }
     }
+}
+
+/// NetworkManager sometimes reports that `connection add` succeeded and then
+/// drops the object, because a delete of the same name is still finishing.
+fn add_forge_b(iface: &str) -> Result<()> {
+    let mut last = None;
+    for attempt in 0..4 {
+        if attempt > 0 {
+            thread::sleep(Duration::from_millis(400));
+        }
+        match nm(&[
+            "connection",
+            "add",
+            "type",
+            "ethernet",
+            "ifname",
+            iface,
+            "con-name",
+            B_CONNECTION,
+            "ipv4.method",
+            "auto",
+            "ipv4.never-default",
+            "yes",
+            "ipv6.method",
+            "disabled",
+            "connection.autoconnect",
+            "no",
+        ]) {
+            Ok(_) => return Ok(()),
+            // nmcli often reports this after NetworkManager already stored forge-b.
+            // Deleting here is what removed the lease.
+            Err(error) if add_should_retry(&error.to_string()) => {
+                if nm(&["connection", "show", B_CONNECTION]).is_ok() {
+                    return Ok(());
+                }
+                last = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if nm(&["connection", "show", B_CONNECTION]).is_ok() {
+        return Ok(());
+    }
+    Err(last.unwrap_or_else(|| ForgeError::Host("could not add the forge-b connection".to_owned())))
+}
+
+/// `nmcli connection up` activates the device and then, when it loses the
+/// ActiveConnection object, sends a deactivate. Ask NetworkManager directly and
+/// wait until the dongle has an address.
+fn activate_and_wait(iface: &str) -> Result<()> {
+    let uuid = nm(&["-g", "connection.uuid", "connection", "show", B_CONNECTION])?;
+    let uuid = uuid.trim();
+    if !uuid_ok(uuid) {
+        return Err(ForgeError::Host(
+            "forge-b has no usable NetworkManager uuid".to_owned(),
+        ));
+    }
+    let conn = busctl(
+        "/org/freedesktop/NetworkManager/Settings",
+        "org.freedesktop.NetworkManager.Settings",
+        "GetConnectionByUuid",
+        &["s", uuid],
+    )?;
+    let conn_path = object_path(&conn).ok_or_else(|| {
+        ForgeError::Host(format!(
+            "NetworkManager did not return a path for forge-b ({conn})"
+        ))
+    })?;
+    let device = nm(&["-g", "GENERAL.DBUS-PATH", "device", "show", iface])?;
+    let device_path = device.trim();
+    if !device_path.starts_with('/') {
+        return Err(ForgeError::Host(format!(
+            "dongle B ({iface}) has no NetworkManager device path"
+        )));
+    }
+    busctl(
+        "/org/freedesktop/NetworkManager",
+        "org.freedesktop.NetworkManager",
+        "ActivateConnection",
+        &["ooo", &conn_path, device_path, "/"],
+    )?;
+    for _ in 0..40 {
+        if iface_ipv4(iface).is_some() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    Err(ForgeError::Host(format!(
+        "dongle B ({iface}) did not get an IPv4 address"
+    )))
+}
+
+fn busctl(path: &str, interface: &str, method: &str, args: &[&str]) -> Result<String> {
+    let mut cmd = vec![
+        "call",
+        "--system",
+        "org.freedesktop.NetworkManager",
+        path,
+        interface,
+        method,
+    ];
+    cmd.extend_from_slice(args);
+    cmd::run_checked("busctl", &cmd)
+}
+
+fn object_path(text: &str) -> Option<String> {
+    text.split_whitespace().find_map(|part| {
+        let part = part.trim_matches('"');
+        part.starts_with("/org/").then(|| part.to_owned())
+    })
+}
+
+fn iface_ipv4(iface: &str) -> Option<String> {
+    let text = cmd::run_checked("ip", &["-4", "-o", "addr", "show", "dev", iface]).ok()?;
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let Some(index) = parts.iter().position(|part| *part == "inet") else {
+            continue;
+        };
+        let addr = parts.get(index + 1)?.split('/').next()?;
+        if ipv4_ok(addr) && !addr.starts_with("169.254.") {
+            return Some(addr.to_owned());
+        }
+    }
+    None
+}
+
+fn device_gateway(iface: &str) -> Option<String> {
+    let text = nm(&["-g", "IP4.GATEWAY", "device", "show", iface]).ok()?;
+    let gw = text.trim();
+    if ipv4_ok(gw) {
+        Some(gw.to_owned())
+    } else {
+        None
+    }
+}
+
+fn add_should_retry(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("does not exist")
+        || text.contains("already exists")
+        || text.contains("już istnieje")
+        || text.contains("juz istnieje")
+}
+
+fn wait_until_connection_gone(name: &str) -> Result<()> {
+    for _ in 0..25 {
+        if nm(&["connection", "show", name]).is_err() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let _ = nm(&["connection", "delete", name]);
+    thread::sleep(Duration::from_millis(200));
+    Ok(())
+}
+
+fn with_net_lock<T>(body: impl FnOnce() -> Result<T>) -> Result<T> {
+    with_net_lock_at(Path::new("/var/lib/forge/network.lock"), body)
+}
+
+fn with_net_lock_at<T>(path: &Path, body: impl FnOnce() -> Result<T>) -> Result<T> {
+    // The installer creates a root:libvirt file. CLI and root workers open the
+    // same inode without needing write access to /var/lib/forge itself.
+    // The kernel releases the lock even if a worker exits unexpectedly.
+    let lock = fs::OpenOptions::new().read(true).write(true).open(path)
+        .map_err(|error| ForgeError::Host(format!(
+            "cannot open network lock {}: {error}; run `forge dev hook` and check libvirt group membership",
+            path.display()
+        )))?;
+    lock.lock()?;
+    body()
 }
 
 fn policy_default_via(dump: &str, iface: &str, gw: &str) -> bool {
@@ -266,7 +468,10 @@ fn ipv4_ok(value: &str) -> bool {
     let parts: Vec<&str> = value.split('.').collect();
     parts.len() == 4
         && parts.iter().all(|part| {
-            !part.is_empty() && part.len() <= 3 && part.chars().all(|ch| ch.is_ascii_digit()) && part.parse::<u8>().is_ok()
+            !part.is_empty()
+                && part.len() <= 3
+                && part.chars().all(|ch| ch.is_ascii_digit())
+                && part.parse::<u8>().is_ok()
         })
 }
 
@@ -274,6 +479,10 @@ fn ipv4_ok(value: &str) -> bool {
 /// active profile was marked never-default, that flag is cleared so Fedora
 /// does not lose its only uplink when B disconnects.
 pub fn enforce() -> Result<String> {
+    with_net_lock(enforce_locked)
+}
+
+fn enforce_locked() -> Result<String> {
     let before = observe()?;
     if !before.nics.iter().any(|nic| nic.kind == Kind::UsbNet) {
         return Ok(render(&before));
@@ -711,6 +920,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn network_lock_works_without_parent_write_and_releases_after_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("forge-lock-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("network.lock");
+        fs::write(&path, "").unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        let error = with_net_lock_at(&path, || -> Result<()> {
+            let contender = fs::File::open(&path).unwrap();
+            assert!(matches!(
+                contender.try_lock(),
+                Err(fs::TryLockError::WouldBlock)
+            ));
+            Err(ForgeError::Host("test failure".to_owned()))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("test failure"));
+        let contender = fs::File::open(&path).unwrap();
+        contender.try_lock().unwrap();
+        drop(contender);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_network_lock_reports_install_step() {
+        let path = std::env::temp_dir().join(format!("forge-lock-{}", uuid::Uuid::new_v4()));
+        let err = with_net_lock_at(&path, || Ok(())).unwrap_err();
+        assert!(err.to_string().contains("forge dev hook"));
+    }
+
+    #[test]
+    fn object_path_strips_busctl_quotes() {
+        assert_eq!(
+            object_path("o \"/org/freedesktop/NetworkManager/Settings/34\"").as_deref(),
+            Some("/org/freedesktop/NetworkManager/Settings/34")
+        );
+    }
+
+    #[test]
+    fn vanished_nm_object_is_retried() {
+        assert!(add_should_retry(
+            "Failed to add 'forge-b' connection: operation succeeded but object /org/freedesktop/NetworkManager/Settings/19 does not exist"
+        ));
+        assert!(!add_should_retry("permission denied"));
+    }
+
+    #[test]
     fn usb_controller_path_is_dongle_not_cable_a() {
         let usb = Path::new("/sys/devices/pci0000:00/0000:00:01.2/0000:02:00.0/usb2/2-1/2-1:1.0");
         let pci = Path::new("/sys/devices/pci0000:00/0000:00:1c.6/0000:0a:00.0");
@@ -787,7 +1044,8 @@ default via 192.168.50.1 dev enp10s0 proto dhcp metric 101
 
     #[test]
     fn dhcp_router_ignores_the_requested_flag() {
-        let options = "requested_routers = 1 | routers = 192.168.100.1 | subnet_mask = 255.255.255.0";
+        let options =
+            "requested_routers = 1 | routers = 192.168.100.1 | subnet_mask = 255.255.255.0";
         assert_eq!(dhcp_router(options).as_deref(), Some("192.168.100.1"));
         assert!(dhcp_router("requested_routers = 1").is_none());
     }

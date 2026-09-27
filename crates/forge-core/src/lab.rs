@@ -87,6 +87,9 @@ impl Forge {
                 profile.id()
             )));
         }
+        if !dry_run {
+            crate::hook::ensure_installed(&self.paths)?;
+        }
         if pull::needs_privileged_prepare(&self.paths) {
             progress::message(
                 progress,
@@ -242,10 +245,12 @@ impl Forge {
     }
 
     pub fn start(&self, name: &str, progress: &Progress) -> Result<()> {
+        crate::hook::ensure_installed(&self.paths)?;
         let own = self.require_owned(name)?;
         pull::ensure_lab_storage(&self.paths)?;
         self.ensure_backing_seclabel(&own)?;
-        pull::verify_file_digest(Path::new(&own.base), &own.base_digest, progress)?;
+        // Digest runs in the qemu hook, immediately before QEMU. Hashing here
+        // as well would read the base twice; Whonix bases are about 100 GiB.
         self.assert_backing(&own)?;
         self.assert_one_wan(&own)?;
         self.ensure_role_shape(&own)?;
@@ -266,9 +271,41 @@ impl Forge {
             let report = hostnet::enforce()?;
             progress::message(progress, report.trim_end());
         }
+        progress::message(
+            progress,
+            "qemu hook re-checks the base digest, role, and dongle B before QEMU starts",
+        );
         virt::start(&self.uri, name)?;
         self.maybe_attach_dongle_b(name, own.role()?, progress)?;
         Ok(())
+    }
+
+    /// Live-attach dongle B after the qemu hook has returned. Retries while
+    /// libvirt still holds the start job.
+    pub(crate) fn attach_kali_live(&self, name: &str) -> Result<()> {
+        let own = self.require_owned(name)?;
+        if own.role()? != Role::OsintClearnet {
+            return Ok(());
+        }
+        let mut last = None;
+        for _ in 0..40 {
+            match virt::domstate(&self.uri, name) {
+                Ok(power) if power.is_active() => {
+                    let _ = hostnet::enforce();
+                    return self.maybe_attach_dongle_b(name, Role::OsintClearnet, &progress::noop);
+                }
+                Ok(_) => std::thread::sleep(std::time::Duration::from_millis(200)),
+                Err(error) => {
+                    last = Some(error);
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| {
+            ForgeError::Virt(format!(
+                "{name} did not stay up long enough to attach dongle B"
+            ))
+        }))
     }
 
     pub fn stop(&self, name: &str, force: bool) -> Result<()> {
@@ -682,7 +719,9 @@ impl Forge {
                 Err(error) => {
                     progress::message(
                         progress,
-                        format!("dongle B did not get a router lease ({error}); internal link only"),
+                        format!(
+                            "dongle B did not get a router lease ({error}); internal link only"
+                        ),
                     );
                     let _ = hostnet::release_usb();
                     virt::ensure_wan_net(&self.uri, None)?;
@@ -769,11 +808,25 @@ impl Forge {
                     );
                     return Ok(());
                 }
+                let live = virt::dumpxml(&self.uri, name).unwrap_or_default();
+                if xml::inspect(&live).usb_ids.contains(&id) {
+                    progress::message(
+                        progress,
+                        format!("dongle B {} is already in {name}", id.display()),
+                    );
+                    return Ok(());
+                }
                 progress::message(
                     progress,
                     format!("attaching dongle B {} to {name} (live)", id.display()),
                 );
-                virt::attach_device_live(&self.uri, name, &id.hostdev_xml())?;
+                if let Err(error) = virt::attach_device_live(&self.uri, name, &id.hostdev_xml()) {
+                    let live = virt::dumpxml(&self.uri, name).unwrap_or_default();
+                    if xml::inspect(&live).usb_ids.contains(&id) {
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
             }
             Resolve::PinnedMissing(id) => {
                 progress::message(
@@ -862,6 +915,10 @@ impl Forge {
 
     pub fn usb_report(&self) -> String {
         usb::format_dev_list(&self.paths)
+    }
+
+    pub fn install_hook(&self) -> Result<()> {
+        crate::hook::ensure_installed(&self.paths)
     }
 
     pub fn enforce_cables(&self) -> Result<String> {

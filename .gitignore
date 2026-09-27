@@ -14,3 +14,15 @@ debug
 .idea/
 *.swp
 *~
+.vscode/
+.grok/
+.codex/
+.env
+.env.*
+*.log
+*.part
+*.7z
+*.tar.gz
+*.tar.xz
+*.pem
+*.key

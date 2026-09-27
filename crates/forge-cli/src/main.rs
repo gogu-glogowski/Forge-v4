@@ -79,9 +79,20 @@ enum DevCommands {
     Usb,
     /// Keep cable A as the only host uplink and take USB dongle B off NetworkManager
     Cables,
+    /// Install the root libvirt qemu hook. Does not start a VM
+    Hook,
 }
 
 fn main() -> ExitCode {
+    if forge_core::effective_uid() == 0 {
+        return match forge_core::root_entry() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{APP_NAME}: {error}");
+                ExitCode::from(1)
+            }
+        };
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(hint) = leftover_hint(&args) {
         eprintln!("{APP_NAME}: {hint}");
@@ -264,6 +275,12 @@ fn run_dev(command: DevCommands) -> Result<(), ForgeError> {
         DevCommands::Cables => {
             let forge = Forge::open_paths(forge_core::ForgePaths::discover())?;
             print!("{}", forge.enforce_cables()?);
+            Ok(())
+        }
+        DevCommands::Hook => {
+            let forge = Forge::open_paths(forge_core::ForgePaths::discover())?;
+            forge.install_hook()?;
+            println!("qemu hook installed at /etc/libvirt/hooks/qemu");
             Ok(())
         }
     }

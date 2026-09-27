@@ -166,6 +166,24 @@ fn push_net_dir(net: &Path, out: &mut Vec<String>) {
     }
 }
 
+/// `/dev/bus/usb/BBB/DDD` for a plugged device, if sysfs still shows it.
+#[must_use]
+pub fn device_node(id: UsbId) -> Option<PathBuf> {
+    let root = Path::new("/sys/bus/usb/devices");
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.contains(':') || read_id(&path) != Some(id) {
+            continue;
+        }
+        let bus: u32 = read_trim(&path.join("busnum"))?.parse().ok()?;
+        let dev: u32 = read_trim(&path.join("devnum"))?.parse().ok()?;
+        return Some(PathBuf::from(format!("/dev/bus/usb/{bus:03}/{dev:03}")));
+    }
+    None
+}
+
 pub fn iface_for(id: UsbId) -> Result<Option<String>> {
     Ok(scan_usb_net()?
         .into_iter()
