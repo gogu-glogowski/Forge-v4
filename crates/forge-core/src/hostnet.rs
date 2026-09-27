@@ -48,6 +48,8 @@ pub struct Audit {
     pub summary: String,
     pub held: Vec<String>,
     pub foreign_defaults: Vec<String>,
+    /// USB NIC that owns the host default route. That is Fedora using cable B.
+    pub usb_defaults: Vec<String>,
 }
 
 pub fn audit() -> Result<Audit> {
@@ -60,7 +62,212 @@ pub fn audit() -> Result<Audit> {
             .map(|n| n.name.clone())
             .collect(),
         foreign_defaults: snap.foreign_defaults(),
+        usb_defaults: snap
+            .nics
+            .iter()
+            .filter(|nic| nic.kind == Kind::UsbNet && snap.defaults.contains(&nic.name))
+            .map(|nic| nic.name.clone())
+            .collect(),
     })
+}
+
+const B_CONNECTION: &str = "forge-b";
+
+/// Take a DHCP lease on dongle B without making it Fedora's default route,
+/// and send only the gateway NAT range (10.0.2.0/24) out that NIC.
+pub fn lease_usb(iface: &str) -> Result<String> {
+    if !iface_ok(iface) {
+        return Err(ForgeError::Host(format!(
+            "refusing to configure unexpected interface '{iface}'"
+        )));
+    }
+    let snap = observe()?;
+    let Some(nic) = snap.nics.iter().find(|nic| nic.name == iface) else {
+        return Err(ForgeError::Host(format!(
+            "dongle B interface {iface} is not up"
+        )));
+    };
+    if nic.kind != Kind::UsbNet {
+        return Err(ForgeError::Host(format!(
+            "{iface} is not dongle B; cable A stays on Fedora"
+        )));
+    }
+    release_usb()?;
+    nm(&[
+        "connection",
+        "add",
+        "type",
+        "ethernet",
+        "ifname",
+        iface,
+        "con-name",
+        B_CONNECTION,
+        "ipv4.method",
+        "auto",
+        "ipv4.never-default",
+        "yes",
+        "ipv6.method",
+        "disabled",
+        "connection.autoconnect",
+        "no",
+    ])?;
+    nm(&[
+        "connection",
+        "modify",
+        B_CONNECTION,
+        "ipv4.routing-rules",
+        "priority 100 from 10.0.2.0/24 table 100",
+    ])?;
+    nm(&["connection", "up", B_CONNECTION])?;
+    let options = nm(&["-g", "DHCP4.OPTION", "device", "show", iface]).unwrap_or_default();
+    let Some(gw) = dhcp_router(&options) else {
+        release_usb()?;
+        return Err(ForgeError::Host(format!(
+            "dongle B ({iface}) got no IPv4 router from DHCP"
+        )));
+    };
+    nm(&[
+        "connection",
+        "modify",
+        B_CONNECTION,
+        "ipv4.routes",
+        &format!("0.0.0.0/0 {gw} table=100"),
+    ])?;
+    nm(&["connection", "up", B_CONNECTION])?;
+    let table = cmd::run_checked("ip", &["route", "show", "table", "100"]).unwrap_or_default();
+    if !policy_default_via(&table, iface, &gw) {
+        release_usb()?;
+        return Err(ForgeError::Host(format!(
+            "dongle B ({iface}) did not install the 10.0.2.0/24 route via {gw}"
+        )));
+    }
+    let after = observe()?;
+    if after.defaults.contains(iface) {
+        release_usb()?;
+        return Err(ForgeError::Host(format!(
+            "dongle B ({iface}) became Fedora's default route; refused"
+        )));
+    }
+    Ok(gw.to_owned())
+}
+
+/// Fedora's libvirt zone drops forwarded packets until this is on. The gateway
+/// NAT uses that forward path, so a fresh install must turn it on itself.
+pub fn allow_libvirt_forward() -> Result<()> {
+    if !cmd::exists("firewall-cmd") {
+        return Ok(());
+    }
+    match firewall_state() {
+        Firewalld::Absent | Firewalld::Stopped => return Ok(()),
+        Firewalld::Running => {}
+    }
+    if libvirt_forwards() == Some(true) {
+        let _ = firewall_cmd(&["--permanent", "--zone=libvirt", "--add-forward"]);
+        return Ok(());
+    }
+    firewall_cmd(&["--zone=libvirt", "--add-forward"])?;
+    firewall_cmd(&["--permanent", "--zone=libvirt", "--add-forward"])?;
+    if libvirt_forwards() != Some(true) {
+        return Err(ForgeError::Host(
+            "firewalld zone libvirt still does not forward; the gateway cannot reach the router"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[must_use]
+pub fn libvirt_forwards() -> Option<bool> {
+    let output = cmd::command("firewall-cmd")
+        .args(["--zone=libvirt", "--query-forward"])
+        .output()
+        .ok()?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if text.to_ascii_lowercase().contains("yes") {
+        Some(true)
+    } else if text.to_ascii_lowercase().contains("no") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub fn release_usb() -> Result<()> {
+    let _ = nm(&["connection", "down", B_CONNECTION]);
+    match nm(&["connection", "delete", B_CONNECTION]) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let text = error.to_string().to_ascii_lowercase();
+            if text.contains("unknown") || text.contains("not found") || text.contains("nie znaleziono")
+            {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+fn policy_default_via(dump: &str, iface: &str, gw: &str) -> bool {
+    dump.lines().any(|line| {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        parts.first() == Some(&"default")
+            && parts.windows(2).any(|pair| pair == ["via", gw])
+            && parts.windows(2).any(|pair| pair == ["dev", iface])
+    })
+}
+
+enum Firewalld {
+    Absent,
+    Stopped,
+    Running,
+}
+
+fn firewall_state() -> Firewalld {
+    let Ok(output) = cmd::command("firewall-cmd").arg("--state").output() else {
+        return Firewalld::Absent;
+    };
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_ascii_lowercase();
+    if text.contains("running") && !text.contains("not running") {
+        Firewalld::Running
+    } else {
+        Firewalld::Stopped
+    }
+}
+
+fn firewall_cmd(args: &[&str]) -> Result<String> {
+    cmd::run_checked("firewall-cmd", args)
+}
+
+fn dhcp_router(options: &str) -> Option<String> {
+    for part in options.split('|') {
+        let part = part.trim();
+        let Some(rest) = part.strip_prefix("routers") else {
+            continue;
+        };
+        let value = rest.trim().trim_start_matches('=').trim();
+        if ipv4_ok(value) {
+            return Some(value.to_owned());
+        }
+    }
+    None
+}
+
+fn ipv4_ok(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('.').collect();
+    parts.len() == 4
+        && parts.iter().all(|part| {
+            !part.is_empty() && part.len() <= 3 && part.chars().all(|ch| ch.is_ascii_digit()) && part.parse::<u8>().is_ok()
+        })
 }
 
 /// Drop every USB NIC from the host. PCI Ethernet (cable A) is left up; if its
@@ -568,6 +775,21 @@ default via 192.168.50.1 dev enp10s0 proto dhcp metric 101
         assert!(text.contains("enp2s0"));
         assert!(text.contains("default"));
         assert!(text.contains("host holds address") || text.contains("default"));
+    }
+
+    #[test]
+    fn policy_route_matches_gateway_and_device() {
+        let dump = "default via 192.168.100.1 dev enp2s0f0u1 proto static metric 20101\n";
+        assert!(policy_default_via(dump, "enp2s0f0u1", "192.168.100.1"));
+        assert!(!policy_default_via(dump, "enp10s0", "192.168.100.1"));
+        assert!(!policy_default_via("", "enp2s0f0u1", "192.168.100.1"));
+    }
+
+    #[test]
+    fn dhcp_router_ignores_the_requested_flag() {
+        let options = "requested_routers = 1 | routers = 192.168.100.1 | subnet_mask = 255.255.255.0";
+        assert_eq!(dhcp_router(options).as_deref(), Some("192.168.100.1"));
+        assert!(dhcp_router("requested_routers = 1").is_none());
     }
 
     #[test]

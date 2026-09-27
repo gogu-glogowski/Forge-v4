@@ -38,7 +38,7 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Attach dongle B to a running VM (kali or whonix-gateway). Does not power it on
+    /// Attach dongle B to a running Kali. The Whonix gateway uses B as its router exit, not as a USB device
     Connect { vm: String },
     /// Remove dongle B. The VM keeps running
     Disconnect { vm: String },

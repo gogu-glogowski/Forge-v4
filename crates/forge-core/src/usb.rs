@@ -43,6 +43,7 @@ impl UsbId {
 pub struct UsbNet {
     pub id: UsbId,
     pub label: String,
+    pub iface: String,
 }
 
 #[must_use]
@@ -122,36 +123,54 @@ pub fn scan_usb_net_root(root: &Path) -> Result<Vec<UsbNet>> {
         if name.contains(':') {
             continue;
         }
-        if !usb_device_has_net(&path) {
+        let Some(iface) = net_ifaces(&path).into_iter().next() else {
             continue;
-        }
+        };
         let Some(id) = read_id(&path) else {
             continue;
         };
         let manuf = read_trim(&path.join("manufacturer")).unwrap_or_default();
         let product = read_trim(&path.join("product")).unwrap_or_default();
         let label = format!("{manuf} {product}").trim().to_owned();
-        out.push(UsbNet { id, label });
+        out.push(UsbNet { id, label, iface });
     }
     out.sort_by_key(|d| d.id.display());
     out.dedup_by_key(|d| d.id);
     Ok(out)
 }
 
-fn usb_device_has_net(dev: &Path) -> bool {
-    if dev.join("net").is_dir() {
-        return true;
-    }
+fn net_ifaces(dev: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    push_net_dir(&dev.join("net"), &mut out);
     let Ok(entries) = fs::read_dir(dev) else {
-        return false;
+        return out;
     };
     for entry in entries.flatten() {
-        let p = entry.path();
-        if p.join("net").is_dir() {
-            return true;
+        push_net_dir(&entry.path().join("net"), &mut out);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn push_net_dir(net: &Path, out: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(net) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if let Some(name) = entry.file_name().to_str() {
+            if !name.is_empty() {
+                out.push(name.to_owned());
+            }
         }
     }
-    false
+}
+
+pub fn iface_for(id: UsbId) -> Result<Option<String>> {
+    Ok(scan_usb_net()?
+        .into_iter()
+        .find(|dev| dev.id == id)
+        .map(|dev| dev.iface))
 }
 
 fn read_id(dev: &Path) -> Option<UsbId> {
@@ -205,7 +224,7 @@ pub enum Resolve {
 pub fn format_dev_list(paths: &ForgePaths) -> String {
     let pin = load_pin(paths).ok().flatten();
     let plugged = scan_usb_net().unwrap_or_default();
-    let mut out = String::from("Dongle B (USB net passthrough)\n");
+    let mut out = String::from("Dongle B (USB ethernet)\n");
     match pin {
         Some(id) => out.push_str(&format!(
             "pin: {} (FORGE_DONGLE_B or {})\n",
@@ -223,7 +242,12 @@ pub fn format_dev_list(paths: &ForgePaths) -> String {
         out.push_str("plugged:\n");
         for dev in plugged {
             let mark = if pin == Some(dev.id) { "  [B]" } else { "" };
-            out.push_str(&format!("  {}  {}{mark}\n", dev.id.display(), dev.label));
+            out.push_str(&format!(
+                "  {}  {}  {}{mark}\n",
+                dev.id.display(),
+                dev.iface,
+                dev.label
+            ));
         }
     }
     out
@@ -262,6 +286,7 @@ mod tests {
         let found = scan_usb_net_root(&root).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id.display(), "0b95:1790");
+        assert_eq!(found[0].iface, "enp0s20");
         let _ = fs::remove_dir_all(root);
     }
 }

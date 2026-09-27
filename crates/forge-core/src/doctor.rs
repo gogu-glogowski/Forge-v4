@@ -61,6 +61,7 @@ pub fn run() -> Result<DoctorReport> {
     checks.push(seven_zip_check());
     checks.push(dongle_b_check());
     checks.push(host_cables_check());
+    checks.push(libvirt_forward_check());
 
     let system = virt::try_connect(SYSTEM_URI);
     match &system {
@@ -306,6 +307,29 @@ fn virt_manager_check() -> Check {
     }
 }
 
+fn libvirt_forward_check() -> Check {
+    match crate::hostnet::libvirt_forwards() {
+        Some(true) => Check {
+            status: CheckStatus::Ok,
+            name: "libvirt forward".to_owned(),
+            detail: "firewalld zone libvirt forwards the gateway NAT".to_owned(),
+            fix: None,
+        },
+        Some(false) => Check {
+            status: CheckStatus::Warn,
+            name: "libvirt forward".to_owned(),
+            detail: "firewalld zone libvirt drops forwarded packets".to_owned(),
+            fix: Some("forge start whonix-gateway".to_owned()),
+        },
+        None => Check {
+            status: CheckStatus::Ok,
+            name: "libvirt forward".to_owned(),
+            detail: "firewalld is not deciding the gateway path".to_owned(),
+            fix: None,
+        },
+    }
+}
+
 fn host_cables_check() -> Check {
     match crate::hostnet::audit() {
         Err(error) => Check {
@@ -314,11 +338,23 @@ fn host_cables_check() -> Check {
             detail: error.to_string(),
             fix: None,
         },
-        Ok(audit) if !audit.held.is_empty() => Check {
+        Ok(audit) if !audit.usb_defaults.is_empty() => Check {
             status: CheckStatus::Fail,
             name: "host cables".to_owned(),
-            detail: format!("host still holds dongle B ({})", audit.held.join(", ")),
+            detail: format!(
+                "dongle B is Fedora's default route ({})",
+                audit.usb_defaults.join(", ")
+            ),
             fix: Some("forge dev cables".to_owned()),
+        },
+        Ok(audit) if !audit.held.is_empty() => Check {
+            status: CheckStatus::Warn,
+            name: "host cables".to_owned(),
+            detail: format!(
+                "dongle B has an address ({}) so the gateway can reach the router. Fedora's default route stays on cable A.",
+                audit.held.join(", ")
+            ),
+            fix: None,
         },
         Ok(audit) if !audit.foreign_defaults.is_empty() => Check {
             status: CheckStatus::Warn,
@@ -355,7 +391,7 @@ fn dongle_b_check() -> Check {
             status: CheckStatus::Ok,
             name: "Dongle B".to_owned(),
             detail: format!(
-                "{} plugged (passthrough on start of kali/whonix-gw)",
+                "{} plugged (gateway exit for whonix, USB device for kali)",
                 id.display()
             ),
             fix: None,

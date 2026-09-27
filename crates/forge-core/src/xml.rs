@@ -1,5 +1,5 @@
 use crate::error::{ForgeError, Result};
-use crate::profile::{METADATA_NS, WHONIX_NET};
+use crate::profile::{METADATA_NS, WAN_NET, WHONIX_NET};
 use crate::role::Role;
 
 #[must_use]
@@ -117,10 +117,13 @@ fn network_xml(role: Role) -> String {
         ),
         Role::WhonixGw => format!(
             "    <interface type='network'>
+      <source network='{WAN_NET}'/>
+      <model type='virtio'/>
+    </interface>
+    <interface type='network'>
       <source network='{WHONIX_NET}'/>
       <model type='virtio'/>
     </interface>
-    <!-- USB dongle B is attached as hostdev by the operator / virt-manager spare -->
 "
         ),
         Role::OsintClearnet => {
@@ -138,6 +141,8 @@ pub struct XmlFacts {
     pub has_passt: bool,
     pub has_virbr0: bool,
     pub forge_whonix_nets: usize,
+    /// Libvirt `<source network='...'>` values, in XML order. Order is eth0, eth1, …
+    pub nets: Vec<String>,
     pub hostdev_usb: usize,
     pub hostdev_pci: usize,
     pub usb_ids: Vec<crate::usb::UsbId>,
@@ -170,6 +175,7 @@ pub fn inspect(xml: &str) -> XmlFacts {
         ..XmlFacts::default()
     };
     facts.usb_ids = crate::usb::ids_in_xml(xml);
+    facts.nets = network_sources(xml);
     facts.disk_files = source_files(xml);
     facts.forge_profile = meta_text(xml, "profile");
     facts.forge_role = meta_text(xml, "role");
@@ -199,6 +205,19 @@ fn hostdev_type_count(xml: &str, kind: &str) -> usize {
     n
 }
 
+fn network_sources(xml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(i) = rest.find("<source") {
+        let chunk = &rest[i..];
+        if let Some(net) = attr(chunk, "network") {
+            out.push(net);
+        }
+        rest = &chunk[1..];
+    }
+    out
+}
+
 fn source_files(xml: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = xml;
@@ -213,9 +232,10 @@ fn source_files(xml: &str) -> Vec<String> {
 }
 
 fn attr(chunk: &str, name: &str) -> Option<String> {
+    let head = &chunk[..chunk.find('>').unwrap_or(chunk.len())];
     for quote in ['\'', '"'] {
         let pat = format!("{name}={quote}");
-        if let Some(i) = chunk.find(&pat) {
+        if let Some(i) = head.find(&pat) {
             let rest = &chunk[i + pat.len()..];
             if let Some(end) = rest.find(quote) {
                 return Some(rest[..end].to_owned());
@@ -274,9 +294,17 @@ pub fn check_role(xml: &str, expected: Role) -> Result<()> {
             }
         }
         Role::WhonixGw => {
-            if facts.interfaces != 1 || facts.forge_whonix_nets == 0 {
+            if facts.hostdev_usb != 0 {
                 return Err(ForgeError::Role(
-                    "whonix-gw must have exactly one NIC on forge-whonix (no host NAT)".to_owned(),
+                    "whonix-gw must not take dongle B as a USB device; B is the host exit of forge-wan"
+                        .to_owned(),
+                ));
+            }
+            let expect = vec![WAN_NET.to_owned(), WHONIX_NET.to_owned()];
+            if facts.nets != expect {
+                return Err(ForgeError::Role(
+                    "whonix-gw needs forge-wan then forge-whonix (eth0 toward the router, eth1 toward the workstation)"
+                        .to_owned(),
                 ));
             }
         }
@@ -401,14 +429,22 @@ mod tests {
         };
         let gw_xml = domain_xml(&gw);
         let ws_xml = domain_xml(&ws);
-        assert!(gw_xml.contains("forge-whonix"));
+        assert!(gw_xml.find("forge-wan").unwrap() < gw_xml.find("forge-whonix").unwrap());
         assert!(ws_xml.contains("forge-whonix"));
         assert!(!gw_xml.contains("default"));
         assert!(!ws_xml.contains("<hostdev"));
         check_role(&gw_xml, Role::WhonixGw).unwrap();
         check_role(&ws_xml, Role::WhonixWs).unwrap();
-        let nat = gw_xml.replace("forge-whonix", "default");
-        assert!(check_role(&nat, Role::WhonixGw).is_err());
+        let swapped = gw_xml
+            .replace("forge-wan", "NET_A")
+            .replace("forge-whonix", "forge-wan")
+            .replace("NET_A", "forge-whonix");
+        assert!(check_role(&swapped, Role::WhonixGw).is_err());
+        let with_usb = format!(
+            "{gw_xml}{}",
+            crate::usb::UsbId::parse("0bda:8153").unwrap().hostdev_xml()
+        );
+        assert!(check_role(&with_usb, Role::WhonixGw).is_err());
     }
 
     #[test]

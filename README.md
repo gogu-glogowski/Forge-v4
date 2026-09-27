@@ -6,14 +6,14 @@ Greenfield after [v2](https://github.com/gogu-glogowski/Forge-v2) and [v3](https
 
 **Now:** Tsurugi, Kali, and the Whonix pair `pull` / `create` / `start` / `stop` on Fedora 44. GNOME Boxes lists the guests (`QEMU System` → `qemu:///system`). SIFT's OVA is behind SANS Portal: `FORGE_SIFT_OVA=/path/to.ova forge pull sift`.
 
-Dongle **B** is optional to boot. `forge start kali` / `whonix-gateway` uses it if present. Boxes and virt-manager Play do not: the guest stays up until `forge connect <vm>`, and `forge disconnect <vm>` takes the dongle back without shutting down. Isolated guests never get it. One WAN guest at a time: gateway **or** Kali, never both. Pin: `FORGE_DONGLE_B=vvvv:pppp` or `forge dev usb`. virt-manager is spare.
+Dongle **B** is optional to boot. Kali takes it as a USB device (`forge connect kali` while the guest is up, `forge disconnect kali` gives it back). The Whonix gateway does not: `forge start whonix-gateway` keeps B on the host and uses it only as the exit toward the router, so the image's first NIC stays the usual `10.0.2.2` path and the second NIC is the private link to the workstation. That start also turns on forwarding for firewalld's libvirt zone. Boxes and virt-manager Play do neither. Isolated guests never get B. One WAN guest at a time: gateway **or** Kali, never both. Pin: `FORGE_DONGLE_B=vvvv:pppp` or `forge dev usb`. virt-manager is spare.
 
 Five guests, four roles.
 
 | You type | Role | Network |
 |----------|------|---------|
 | `tsurugi`, `sift` | `isolated` | no NIC |
-| `whonix` (pair) | `whonix-gw` + `whonix-ws` | Gateway: USB dongle **B** only; Workstation: internal only |
+| `whonix` (pair) | `whonix-gw` + `whonix-ws` | Gateway: eth0 toward dongle **B**, eth1 private link; Workstation: that private link only |
 | `kali` | `osint-clearnet` | USB dongle **B** only (not at the same time as Gateway) |
 
 Host Fedora uses **provider A** (onboard Ethernet). Guests never use A. You plug and unplug cables.
@@ -52,7 +52,7 @@ Forge uses **`qemu:///system`**. Do not run `sudo forge`.
 **Hardware**
 
 - Onboard Ethernet = **A** — only the host, only while installing/updating Fedora, libvirt, Rust, Forge, and while `forge pull` downloads images. Then unplug (or `nmcli device disconnect`).
-- USB-C → Ethernet dongle (preferred) or USB Wi-Fi = **B** — only VMs. Cables are the default; Wi-Fi is the same role. `forge dev cables` takes B off the host without starting a VM.
+- USB-C → Ethernet dongle (preferred) or USB Wi-Fi = **B** — the guests' internet. Kali gets the USB device. The Whonix gateway leaves it on the host and sends only the gateway's traffic out of it. Fedora's default route stays on A. `forge dev cables` takes B off the host without starting a VM.
 
 Build from source (no COPR yet):
 
@@ -78,7 +78,7 @@ If `forge dev doctor` is not green, stop.
 forge pull kali          # fetch image into a base
 forge create kali        # overlay VM named kali, role osint-clearnet
 forge start kali
-forge connect kali        # dongle B while the guest is already running
+forge connect kali        # USB dongle B while Kali is already running
 forge disconnect kali
 forge status kali
 forge stop kali

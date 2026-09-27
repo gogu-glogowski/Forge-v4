@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::cmd::{self, command};
 use crate::error::{ForgeError, Result, io_path};
-use crate::profile::{FORGE_VMS_POOL, SYSTEM_URI, WHONIX_NET};
+use crate::profile::{FORGE_VMS_POOL, SYSTEM_URI, WAN_NET, WHONIX_NET};
 use crate::role::VmPower;
 
 pub fn uri() -> Result<String> {
@@ -185,6 +185,73 @@ pub fn ensure_whonix_net(uri: &str) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Gateway eth0. `egress` is the USB dongle's host interface. Without it the
+/// network stays isolated so traffic cannot leave through cable A.
+pub fn ensure_wan_net(uri: &str, egress: Option<&str>) -> Result<()> {
+    if let Some(dev) = egress {
+        if !iface_ok(dev) {
+            return Err(ForgeError::Host(format!(
+                "refusing forge-wan egress on unexpected interface '{dev}'"
+            )));
+        }
+    }
+    let desired = wan_net_xml(egress);
+    if let Ok(current) = virsh(uri, &["net-dumpxml", WAN_NET]) {
+        if wan_xml_ok(&current, egress) {
+            let _ = virsh(uri, &["net-start", WAN_NET]);
+            return Ok(());
+        }
+        let _ = virsh(uri, &["net-destroy", WAN_NET]);
+        let _ = virsh(uri, &["net-undefine", WAN_NET]);
+    }
+    let tmp = tempfile_xml(&desired)?;
+    let defined = virsh(uri, &["net-define", &tmp]);
+    let _ = fs::remove_file(&tmp);
+    defined?;
+    virsh(uri, &["net-start", WAN_NET])?;
+    let _ = virsh(uri, &["net-autostart", WAN_NET]);
+    Ok(())
+}
+
+fn wan_net_xml(egress: Option<&str>) -> String {
+    match egress {
+        Some(dev) => format!(
+            "<network>\n  <name>{WAN_NET}</name>\n  <forward mode='nat'>\n    <interface dev='{dev}'/>\n  </forward>\n  <bridge name='virbr-forgewan' stp='off' delay='0'/>\n  <ip address='10.0.2.2' netmask='255.255.255.0'/>\n</network>\n"
+        ),
+        None => format!(
+            "<network>\n  <name>{WAN_NET}</name>\n  <bridge name='virbr-forgewan' stp='off' delay='0'/>\n  <ip address='10.0.2.2' netmask='255.255.255.0'/>\n</network>\n"
+        ),
+    }
+}
+
+fn wan_xml_ok(xml: &str, egress: Option<&str>) -> bool {
+    let lower = xml.to_ascii_lowercase();
+    if !lower.contains("10.0.2.2") || !lower.contains("virbr-forgewan") {
+        return false;
+    }
+    if lower.contains("virbr0") {
+        return false;
+    }
+    match egress {
+        Some(dev) => {
+            let needle = format!("dev='{}'", dev.to_ascii_lowercase());
+            let needle_dq = format!("dev=\"{}\"", dev.to_ascii_lowercase());
+            lower.contains("mode='nat'")
+                && (lower.contains(&needle) || lower.contains(&needle_dq))
+        }
+        None => !lower.contains("mode='nat'") && !lower.contains("<interface"),
+    }
+}
+
+fn iface_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 15
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && !name.contains("..")
 }
 
 pub fn qemu_img_create_overlay(base: &Path, overlay: &Path) -> Result<()> {

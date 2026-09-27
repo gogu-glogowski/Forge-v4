@@ -9,10 +9,11 @@ pub enum Role {
 }
 
 impl Role {
-    /// Kali and the Whonix gateway may hold USB dongle B. Nothing else may.
+    /// Kali may hold the USB device itself. The Whonix gateway must not:
+    /// its image names the first virtio NIC eth0 and expects 10.0.2.2 there.
     #[must_use]
     pub fn may_hold_dongle(self) -> bool {
-        matches!(self, Self::WhonixGw | Self::OsintClearnet)
+        matches!(self, Self::OsintClearnet)
     }
 
     #[must_use]
@@ -95,9 +96,9 @@ mod tests {
     use super::Role;
 
     #[test]
-    fn only_kali_and_gateway_may_hold_dongle() {
+    fn only_kali_may_hold_dongle() {
         assert!(Role::OsintClearnet.may_hold_dongle());
-        assert!(Role::WhonixGw.may_hold_dongle());
+        assert!(!Role::WhonixGw.may_hold_dongle());
         assert!(!Role::WhonixWs.may_hold_dongle());
         assert!(!Role::Isolated.may_hold_dongle());
     }

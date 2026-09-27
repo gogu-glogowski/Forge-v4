@@ -247,6 +247,8 @@ impl Forge {
         self.ensure_backing_seclabel(&own)?;
         pull::verify_file_digest(Path::new(&own.base), &own.base_digest, progress)?;
         self.assert_backing(&own)?;
+        self.assert_one_wan(&own)?;
+        self.ensure_role_shape(&own)?;
         let xml = virt::dumpxml(&self.uri, name)?;
         xml::check_role(&xml, own.role()?)?;
         self.assert_dongle_exclusive(Some(name))?;
@@ -258,8 +260,12 @@ impl Forge {
                 ));
             }
         }
-        let report = hostnet::enforce()?;
-        progress::message(progress, report.trim_end());
+        if own.role()? == Role::WhonixGw {
+            self.prepare_gateway_exit(progress)?;
+        } else if own.role()? == Role::OsintClearnet {
+            let report = hostnet::enforce()?;
+            progress::message(progress, report.trim_end());
+        }
         virt::start(&self.uri, name)?;
         self.maybe_attach_dongle_b(name, own.role()?, progress)?;
         Ok(())
@@ -277,7 +283,12 @@ impl Forge {
             }
         }
         let _ = self.maybe_detach_dongle_b(name, own.role()?);
-        hostnet::enforce()?;
+        if own.role()? == Role::WhonixGw {
+            let _ = hostnet::release_usb();
+            let _ = hostnet::enforce();
+        } else if own.role()? == Role::OsintClearnet {
+            let _ = hostnet::enforce();
+        }
         if force {
             virt::destroy(&self.uri, name)?;
         } else {
@@ -307,9 +318,7 @@ impl Forge {
         let xml = virt::dumpxml(&self.uri, name)?;
         let facts = xml::inspect(&xml);
         let role_ok = xml::check_role(&xml, ownership.role()?);
-        let dongle = if facts.usb_ids.is_empty() {
-            None
-        } else {
+        let dongle = if !facts.usb_ids.is_empty() {
             Some(
                 facts
                     .usb_ids
@@ -318,6 +327,10 @@ impl Forge {
                     .collect::<Vec<_>>()
                     .join(","),
             )
+        } else if facts.nets.iter().any(|net| net == crate::profile::WAN_NET) {
+            Some("via-B".to_owned())
+        } else {
+            None
         };
         Ok(VmStatus {
             ownership,
@@ -332,9 +345,15 @@ impl Forge {
     pub fn connect_dongle(&self, name: &str, progress: &Progress) -> Result<DongleLink> {
         let own = self.require_owned(name)?;
         let role = own.role()?;
+        if role == Role::WhonixGw {
+            return Err(ForgeError::Role(
+                "whonix-gateway does not take dongle B inside the VM. B stays on the host as the exit to the router. Stop the workstation, stop the gateway, then `forge start whonix-gateway`."
+                    .to_owned(),
+            ));
+        }
         if !role.may_hold_dongle() {
             return Err(ForgeError::Role(format!(
-                "{name} ({}) cannot hold dongle B; only kali and whonix-gateway",
+                "{name} ({}) cannot hold dongle B; only kali",
                 role.id()
             )));
         }
@@ -394,7 +413,7 @@ impl Forge {
         if ids.is_empty() {
             if !role.may_hold_dongle() {
                 return Err(ForgeError::Role(format!(
-                    "{name} ({}) cannot hold dongle B; only kali and whonix-gateway",
+                    "{name} ({}) cannot hold dongle B; only kali",
                     role.id()
                 )));
             }
@@ -601,6 +620,28 @@ impl Forge {
         if xml::backing_relabel_skipped(&xml) {
             return Ok(());
         }
+        self.redefine_owned(own)
+    }
+
+    fn ensure_role_shape(&self, own: &Ownership) -> Result<()> {
+        if !virt::domain_exists(&self.uri, &own.name)? {
+            return Ok(());
+        }
+        let xml = virt::dumpxml(&self.uri, &own.name)?;
+        if xml::check_role(&xml, own.role()?).is_ok() {
+            return Ok(());
+        }
+        let power = virt::domstate(&self.uri, &own.name)?;
+        if power.is_active() {
+            return Err(ForgeError::Role(format!(
+                "{} is running with the old network layout. Stop it, then start it again.",
+                own.name
+            )));
+        }
+        self.redefine_owned(own)
+    }
+
+    fn redefine_owned(&self, own: &Ownership) -> Result<()> {
         let profile = own.profile()?;
         let memory = if own.name == WHONIX_WS_NAME {
             profile.workstation_memory_mib()
@@ -619,6 +660,81 @@ impl Forge {
             vcpus: profile.vcpus(),
         };
         virt::define_xml(&self.uri, &xml::domain_xml(&spec))?;
+        Ok(())
+    }
+
+    fn prepare_gateway_exit(&self, progress: &Progress) -> Result<()> {
+        hostnet::allow_libvirt_forward()?;
+        let report = hostnet::enforce()?;
+        progress::message(progress, report.trim_end());
+        virt::ensure_whonix_net(&self.uri)?;
+        match self.wait_dongle_iface()? {
+            Some(iface) => match hostnet::lease_usb(&iface) {
+                Ok(router) => {
+                    progress::message(
+                        progress,
+                        format!(
+                            "dongle B {iface} leased from the router ({router}); Fedora keeps cable A"
+                        ),
+                    );
+                    virt::ensure_wan_net(&self.uri, Some(&iface))?;
+                }
+                Err(error) => {
+                    progress::message(
+                        progress,
+                        format!("dongle B did not get a router lease ({error}); internal link only"),
+                    );
+                    let _ = hostnet::release_usb();
+                    virt::ensure_wan_net(&self.uri, None)?;
+                }
+            },
+            None => {
+                progress::message(
+                    progress,
+                    "dongle B not plugged; workstation can reach the gateway, the gateway has no router",
+                );
+                let _ = hostnet::release_usb();
+                virt::ensure_wan_net(&self.uri, None)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_dongle_iface(&self) -> Result<Option<String>> {
+        let mut resolved = usb::resolve_plugged(&self.paths)?;
+        if matches!(resolved, Resolve::None) {
+            return Ok(None);
+        }
+        for _ in 0..20 {
+            if let Resolve::Plugged(id) = resolved {
+                if let Some(iface) = usb::iface_for(id)? {
+                    return Ok(Some(iface));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            resolved = usb::resolve_plugged(&self.paths)?;
+            if matches!(resolved, Resolve::None) {
+                return Ok(None);
+            }
+        }
+        Ok(None)
+    }
+
+    fn assert_one_wan(&self, own: &Ownership) -> Result<()> {
+        let other = match own.role()? {
+            Role::WhonixGw => "kali",
+            Role::OsintClearnet => WHONIX_GW_NAME,
+            _ => return Ok(()),
+        };
+        if virt::domain_exists(&self.uri, other)? {
+            let power = virt::domstate(&self.uri, other).unwrap_or(VmPower::Shutoff);
+            if power.is_active() {
+                return Err(ForgeError::Role(format!(
+                    "one WAN guest at a time; stop {other} before starting {}",
+                    own.name
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -641,7 +757,7 @@ impl Forge {
     }
 
     fn maybe_attach_dongle_b(&self, name: &str, role: Role, progress: &Progress) -> Result<()> {
-        if !matches!(role, Role::WhonixGw | Role::OsintClearnet) {
+        if role != Role::OsintClearnet {
             return Ok(());
         }
         match usb::resolve_plugged(&self.paths)? {

@@ -9,6 +9,9 @@ pub const METADATA_NS: &str = "https://github.com/gogu-glogowski/Forge-v4";
 pub const SYSTEM_URI: &str = "qemu:///system";
 pub const FORGE_VMS_POOL: &str = "forge-vms";
 pub const WHONIX_NET: &str = "forge-whonix";
+/// Gateway eth0. Address 10.0.2.2 is what the Whonix image already expects.
+/// When dongle B is up, this network NATs only out that USB NIC, never cable A.
+pub const WAN_NET: &str = "forge-wan";
 
 /// Tsurugi LAB 26.03 — published short id 0x116AD57C is the encryption subkey.
 pub const TSURUGI_KEY_FPR: &str = "68A60308FCD7BCA0F81E75016DF20CE124289711";
