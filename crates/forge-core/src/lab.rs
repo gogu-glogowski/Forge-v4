@@ -717,14 +717,11 @@ impl Forge {
                     virt::ensure_wan_net(&self.uri, Some(&iface))?;
                 }
                 Err(error) => {
-                    progress::message(
-                        progress,
-                        format!(
-                            "dongle B did not get a router lease ({error}); internal link only"
-                        ),
-                    );
                     let _ = hostnet::release_usb();
                     virt::ensure_wan_net(&self.uri, None)?;
+                    return Err(ForgeError::Host(format!(
+                        "dongle B exit preparation failed ({error}); forge-wan isolated, gateway not started"
+                    )));
                 }
             },
             None => {

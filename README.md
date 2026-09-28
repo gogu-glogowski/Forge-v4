@@ -134,6 +134,8 @@ For Whonix, plug B into its DHCP router and perform the initial network preparat
 forge start whonix-gateway
 ```
 
+Forge waits for NetworkManager to install the route through B before enabling the B-only NAT network. If this fails, it leaves `forge-wan` isolated and reports the preparation error without starting the gateway; fix B/router connectivity and retry the same command.
+
 Open the gateway in Boxes. Then Play `whonix-workstation`. If it reports that the B lease is not ready, wait a few seconds and retry. Complete the upstream guests' first-run setup inside Boxes; Forge does not provision guest accounts or change their passwords. Whonix also needs time to establish Tor connectivity.
 
 ## Everyday use

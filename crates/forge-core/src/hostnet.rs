@@ -119,21 +119,21 @@ pub fn lease_usb(iface: &str) -> Result<String> {
             "ipv4.routes",
             &format!("0.0.0.0/0 {gw} table=100"),
         ])?;
-        // A second `connection up` makes nmcli tear the lease down. Reapply, and
-        // install the table-100 route directly so a flaky client cannot drop it.
-        let _ = nm(&["device", "reapply", iface]);
-        let _ = cmd::run_checked(
-            "ip",
-            &[
-                "route", "replace", "default", "via", &gw, "dev", iface, "table", "100",
-            ],
-        );
-        let table = cmd::run_checked("ip", &["route", "show", "table", "100"]).unwrap_or_default();
-        if !policy_default_via(&table, iface, &gw) {
+        // Reapply is asynchronous: success does not mean the route is already
+        // in the kernel. In particular, DHCP can restart while applying routes.
+        // Let NetworkManager install it; an unprivileged CLI cannot use ip route
+        // replace, and checking immediately used to tear down a valid lease.
+        let ready = nm(&["device", "reapply", iface]).and_then(|_| {
+            wait_policy_default(
+                iface,
+                &gw,
+                || cmd::run_checked("ip", &["route", "show", "table", "100"]),
+                || thread::sleep(Duration::from_millis(250)),
+            )
+        });
+        if let Err(error) = ready {
             let _ = release_usb_inner();
-            return Err(ForgeError::Host(format!(
-                "dongle B ({iface}) did not install the 10.0.2.0/24 route via {gw}"
-            )));
+            return Err(error);
         }
         let after = observe()?;
         if after.defaults.contains(iface) {
@@ -412,6 +412,30 @@ fn with_net_lock_at<T>(path: &Path, body: impl FnOnce() -> Result<T>) -> Result<
         )))?;
     lock.lock()?;
     body()
+}
+
+/// Wait up to the DHCP activation timeout, retaining the last observation for
+/// diagnosis. A route via another NIC/router never satisfies this check.
+fn wait_policy_default(
+    iface: &str,
+    gw: &str,
+    mut read: impl FnMut() -> Result<String>,
+    mut pause: impl FnMut(),
+) -> Result<()> {
+    let mut last = String::new();
+    for attempt in 0..=180 {
+        if attempt > 0 {
+            pause();
+        }
+        match read() {
+            Ok(table) if policy_default_via(&table, iface, gw) => return Ok(()),
+            Ok(table) => last = table,
+            Err(error) => last = error.to_string(),
+        }
+    }
+    Err(ForgeError::Host(format!(
+        "dongle B ({iface}) did not install the 10.0.2.0/24 route via {gw} after 45s; table 100: {last}"
+    )))
 }
 
 fn policy_default_via(dump: &str, iface: &str, gw: &str) -> bool {
@@ -1040,6 +1064,46 @@ default via 192.168.50.1 dev enp10s0 proto dhcp metric 101
         assert!(policy_default_via(dump, "enp2s0f0u1", "192.168.100.1"));
         assert!(!policy_default_via(dump, "enp10s0", "192.168.100.1"));
         assert!(!policy_default_via("", "enp2s0f0u1", "192.168.100.1"));
+    }
+
+    #[test]
+    fn policy_route_waits_for_async_reapply() {
+        let mut observations = [
+            Err(ForgeError::Host("table does not exist".to_owned())),
+            Ok(String::new()),
+            Ok("default via 192.168.100.1 dev enp10s0".to_owned()),
+            Ok("default via 192.168.100.1 dev enp2s0f0u1".to_owned()),
+        ]
+        .into_iter();
+        let mut pauses = 0;
+        wait_policy_default(
+            "enp2s0f0u1",
+            "192.168.100.1",
+            || observations.next().expect("must stop at the B route"),
+            || pauses += 1,
+        )
+        .unwrap();
+        assert_eq!(pauses, 3);
+    }
+
+    #[test]
+    fn policy_route_timeout_rejects_wrong_exit() {
+        for table in [
+            "",
+            "default via 192.168.100.1 dev enp10s0",
+            "default via 192.168.50.1 dev enp2s0f0u1",
+        ] {
+            let mut pauses = 0;
+            let error = wait_policy_default(
+                "enp2s0f0u1",
+                "192.168.100.1",
+                || Ok(table.to_owned()),
+                || pauses += 1,
+            )
+            .unwrap_err();
+            assert_eq!(pauses, 180);
+            assert!(error.to_string().contains("after 45s"));
+        }
     }
 
     #[test]
