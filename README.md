@@ -2,6 +2,10 @@
 
 Forge prepares Tsurugi, SIFT, Kali and a Whonix Gateway/Workstation pair as KVM virtual machines on Fedora. It downloads and verifies upstream images, keeps base disks in `/var/lib/forge/bases`, and creates writable qcow2 overlays in `/var/lib/forge/vms`. **GNOME Boxes is the everyday GUI**; Forge handles image preparation, VM creation and the libvirt hook used by Boxes' Play button.
 
+[![Ten kod brzmi lepiej z muzyką — odpal na YouTube](assets/music-banner.svg)](https://www.youtube.com/watch?v=CZfbJlhUxw8)
+
+<sub>🎧 Otwórz link w nowej karcie, włącz muzykę i wróć do repo.</sub>
+
 | Profile | VM names | RAM / vCPUs per VM | Network |
 | --- | --- | --- | --- |
 | `tsurugi` | `tsurugi` | 8 GiB / 4 | No NIC |

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="280" viewBox="0 0 1200 280" role="img" aria-labelledby="title desc">
+  <title id="title">Ten kod brzmi lepiej z muzyką — odpal na YouTube</title>
+  <desc id="desc">Ciemny baner z neonowym przyciskiem play i falą dźwięku.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#111827"/><stop offset="1" stop-color="#090d17"/></linearGradient>
+    <linearGradient id="accent"><stop stop-color="#63f5cf"/><stop offset="1" stop-color="#8aa5ff"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="1198" height="278" rx="24" fill="url(#bg)" stroke="#293449" stroke-width="2"/>
+  <path d="M32 1H1168" stroke="url(#accent)" stroke-width="2"/>
+  <circle cx="115" cy="140" r="57" fill="#63f5cf" fill-opacity=".07" stroke="#63f5cf" stroke-width="2"/>
+  <path d="M103 116L137 140L103 164Z" fill="#63f5cf"/>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <text x="204" y="76" fill="#63f5cf" font-size="14" font-weight="700" letter-spacing="4">MAJOR / CODE &amp; MUSIC</text>
+    <text x="202" y="128" fill="#f1f5ff" font-size="36" font-weight="700">Ten kod brzmi lepiej z muzyką.</text>
+    <text x="204" y="167" fill="#a6b1c7" font-size="19">Odpal w drugiej karcie i rozgość się w repo.</text>
+    <rect x="204" y="198" width="208" height="39" rx="19.5" fill="#63f5cf"/>
+    <text x="308" y="223" text-anchor="middle" fill="#09131a" font-size="14" font-weight="700" letter-spacing="1">PLAY ON YOUTUBE ↗</text>
+  </g>
+  <g stroke="url(#accent)" stroke-width="8" stroke-linecap="round" opacity=".65">
+    <path d="M949 128V152 M969 111V169 M989 92V188 M1009 119V161 M1029 76V204 M1049 99V181 M1069 115V165 M1089 89V191 M1109 109V171 M1129 129V151"/>
+  </g>
+</svg>
