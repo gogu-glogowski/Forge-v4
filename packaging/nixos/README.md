@@ -1,5 +1,10 @@
 # NixOS: experimental native package and module
 
+Target installer experience: [shared port contract](../../PORT-CONTRACT.md).
+The contract includes music-first selection, prerequisite checks/install, explicit
+network selection and integrated image preparation with one authentication.
+Existing manual instructions below are not proof that this complete flow is implemented.
+
 Use current stable NixOS x86_64. This is a source derivation, not a DEB/RPM or an
 ISO. Native evaluation/build and physical guest start/stop remain required.
 No claim of production readiness is made.

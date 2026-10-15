@@ -1,5 +1,35 @@
 # Mandatory rules for every Forge port
 
+## One installer from prerequisites to prepared guests
+
+Owner requirement: every distribution must eventually ship one native interactive
+installer, not a sequence of manual repair commands. See PORT-CONTRACT.md for the
+required flow and explicit pending acceptance checks. Do not call an existing
+package-only entrypoint complete. Preserve the central README layout; put clear
+installation instructions and validation status in each distribution's guide.
+
+- First ask whether to enable installation/preparation music; honor the answer
+  throughout the operation. Ask before starting playback. Music failure is nonfatal.
+- Check host/VM environment, architecture, virtualization/KVM access, resources,
+  repositories, native dependencies, libvirt access/services, firewall, confinement
+  and storage. Install/configure prerequisites through bounded privileged work.
+- Clearly announce completed prerequisite work before asking Standard/Dedicated.
+  Explain topology accurately; Standard is not permission to bypass security.
+- Install/configure Forge and prepare the selected images from that same entrypoint.
+  Do not make the user run prepare separately. Preserve existing data/mode and
+  keep all guests off during setup. Never run the entire Forge CLI as root.
+- Use at most one authentication for the complete invocation, including package
+  installation and preparation, even across long downloads; no global sudo bypass.
+- Only report completion after verification. If login/reboot is needed, explain
+  why and provide a truthful final restart instruction. Never reboot automatically.
+- Standard permits multiple guests concurrently when host resources allow.
+  Retain confinement, verified bases, forensic isolation and the Workstation-only
+  private connection to its running Gateway. Resource warnings must use actual
+  requirements/availability; do not impose arbitrary one-guest exclusivity or
+  automatically give every guest all host RAM/CPUs.
+- Dedicated retains exclusive ownership rules where the shared USB uplink B
+  requires them. Never relax those rules merely to match Standard concurrency.
+
 ## One authentication per operation
 
 This is a hard product requirement from the project owner, applicable to every

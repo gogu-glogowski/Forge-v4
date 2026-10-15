@@ -1,5 +1,10 @@
 # Forge 4.2.0 binary DEB
 
+Target installer experience: [shared port contract](../../PORT-CONTRACT.md).
+The contract includes music-first selection, prerequisite checks/install, explicit
+network selection and integrated image preparation with one authentication.
+Existing manual instructions below are not proof that this complete flow is implemented.
+
 Build on amd64 Debian-family systems with Rust 1.89+, a C compiler, Python 3.11+,
 `dpkg-dev`, `fakeroot` and `xz-utils`:
 

@@ -987,7 +987,19 @@ fn pid_is_qemu(pid: i32) -> bool {
     let Ok(bytes) = fs::read(format!("/proc/{pid}/cmdline")) else {
         return false;
     };
-    String::from_utf8_lossy(&bytes).contains("qemu-system")
+    qemu_cmdline(&bytes)
+}
+
+fn qemu_cmdline(bytes: &[u8]) -> bool {
+    let Some(executable) = bytes.split(|byte| *byte == 0).next() else {
+        return false;
+    };
+    let Ok(executable) = std::str::from_utf8(executable) else {
+        return false;
+    };
+    let name = Path::new(executable).file_name().and_then(|name| name.to_str());
+    matches!(name, Some("qemu-kvm"))
+        || name.is_some_and(|name| name.starts_with("qemu-system-") && name.len() > "qemu-system-".len())
 }
 
 fn xml_uses_forge_store(xml: &str) -> bool {
@@ -1101,6 +1113,14 @@ fn note(text: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn qemu_process_detection_supports_el10_without_matching_guest_arguments() {
+        assert!(super::qemu_cmdline(b"/usr/libexec/qemu-kvm\0-name\0guest=whonix-gateway\0"));
+        assert!(super::qemu_cmdline(b"/usr/bin/qemu-system-x86_64\0-name\0guest=kali\0"));
+        assert!(!super::qemu_cmdline(b"/usr/bin/editor\0qemu-system-x86_64\0"));
+        assert!(!super::qemu_cmdline(b"/usr/bin/not-qemu-kvm\0"));
+        assert!(!super::qemu_cmdline(b"\0"));
+    }
     use super::*;
     use crate::xml::{DomainSpec, domain_xml};
 

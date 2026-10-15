@@ -1,5 +1,10 @@
 # Fedora RPM
 
+Target installer experience: [shared port contract](../../PORT-CONTRACT.md).
+The contract includes music-first selection, prerequisite checks/install, explicit
+network selection and integrated image preparation with one authentication.
+Existing manual instructions below are not proof that this complete flow is implemented.
+
 Target: Fedora 44+ Workstation, x86_64, systemd, NetworkManager, KVM and enforcing
 SELinux. This is an unsigned third-party binary RPM, not a Fedora repository submission.
 

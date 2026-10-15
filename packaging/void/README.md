@@ -1,5 +1,10 @@
 # Void Linux glibc x86_64: experimental XBPS port
 
+Target installer experience: [shared port contract](../../PORT-CONTRACT.md).
+The contract includes music-first selection, prerequisite checks/install, explicit
+network selection and integrated image preparation with one authentication.
+Existing manual instructions below are not proof that this complete flow is implemented.
+
 Build with cargo and xbps-create on PATH:
 `python3 packaging/void/build.py --output /tmp/forge-xbps`.
 Index the directory with `xbps-rindex -a /tmp/forge-xbps/*.xbps`, then install from
