@@ -190,7 +190,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
     },
     Dependency {
         name: "QEMU",
-        alternatives: &["qemu-system-x86_64"],
+        alternatives: &["qemu-system-x86_64", "/usr/libexec/qemu-kvm"],
         fedora_package: "qemu-kvm",
         arch_package: "qemu-desktop",
         debian_package: "qemu-system-x86",
@@ -761,6 +761,16 @@ mod tests {
                 .find(|name| self.files.contains_key(**name))
                 .map(|name| (*name).to_owned())
         }
+    }
+
+    #[test]
+    fn el10_qemu_libexec_path_is_recognized() {
+        let fixture = Fixture::default()
+            .file("/etc/os-release", "ID=almalinux\nVERSION_ID=10.2")
+            .file("/usr/libexec/qemu-kvm", "");
+        let host = Host::probe(&fixture);
+        let qemu = host.tools.iter().find(|tool| tool.dependency.name == "QEMU").unwrap();
+        assert_eq!(qemu.executable.as_deref(), Some("/usr/libexec/qemu-kvm"));
     }
 
     #[test]

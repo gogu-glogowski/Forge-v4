@@ -1,3 +1,10 @@
+## AlmaLinux 10 native Boxes candidate (2026-10-15)
+
+- Add a builder for GNOME Boxes 50.0 using verified upstream source and AlmaLinux libraries.
+- Document signed AlmaLinux Devel runtime dependencies without globally enabling Devel.
+- EL10 Forge RPM release 2 retains GNOME Boxes and recognizes /usr/libexec/qemu-kvm.
+- Keep experimental readiness status pending physical GUI/VM and confinement validation.
+
 # Changelog
 
 ## Unreleased — physical installation lab and experimental ports
