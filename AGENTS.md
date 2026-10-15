@@ -61,3 +61,19 @@ Validate EACH distribution separately: authentication count, installer selection
 and preservation of mode, both network modes, music/audio, Boxes, image verification,
 storage, VM start/stop and effective confinement. A test/build on another distro
 is not a substitute. Do not weaken or omit project requirements to make a port pass.
+
+## Preserve the operator's identity and host configuration
+
+Hard requirement for the entire official project and every port:
+
+- Use the existing authenticated operator account. Do not hardcode the developer's
+  username or hostname as another user's identity, paths or ownership.
+- Never rename/create/replace the operator account as a side effect of installation,
+  setup, downloads, preparation, updates or VM lifecycle operations.
+- Preserve static, pretty and transient hostnames. Do not call set-hostname,
+  sethostname, edit /etc/hostname or change NetworkManager/DHCP hostname policy.
+- Do not add hostname-changing installer choices. The owner clarified that
+  personal transient hostname changes belong outside the official Forge program.
+- Names of guest VMs must not alter the host computer's or operator's identity.
+- Test preservation of account identity and all hostname forms on every port.
+  Fail and investigate any unrequested identity change; do not mark the port ready.
