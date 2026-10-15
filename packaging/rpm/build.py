@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=REPO / 'dist/rpm')
     parser.add_argument('--skip-build', action='store_true')
+    parser.add_argument('--target', choices=['fedora', 'el10'], default='fedora')
     args = parser.parse_args()
     version = tomllib.loads((REPO / 'Cargo.toml').read_text())['workspace']['package']['version']
     if not args.skip_build:
@@ -43,6 +44,8 @@ def main():
         with tarfile.open(top / f'SOURCES/forge-{version}-payload.tar.xz', 'w:xz') as archive:
             archive.add(payload, arcname=payload.name)
         spec = (REPO / 'packaging/rpm/forge.spec.in').read_text().replace('@VERSION@', version)
+        if args.target == 'el10':
+            spec = spec.replace('Release:        1%{?dist}', 'Release:        1.el10').replace('Requires:       fedora-release >= 44', 'Requires:       (almalinux-release >= 10 or rocky-release >= 10)')
         path = top / 'SPECS/forge.spec'
         path.write_text(spec)
         subprocess.run(['rpmbuild', '-bb', '--define', f'_topdir {top}', '--define', f'_dbpath {top}/rpmdb', '--define', f'_tmppath {top}/tmp', str(path)], check=True)

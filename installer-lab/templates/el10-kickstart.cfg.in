@@ -1,0 +1,14 @@
+# Deliberately no clearpart, zerombr, autopart or disk selection.
+# Anaconda requires the operator to complete storage configuration.
+graphical
+lang pl_PL.UTF-8
+keyboard --xlayouts='pl'
+timezone Europe/Warsaw --utc
+rootpw --lock
+user --name=major --gecos=Major --groups=wheel --iscrypted --password=@PASSWORD_HASH@
+firstboot --enable
+%packages
+@^workstation-product-environment
+python3
+ansible-core
+%end

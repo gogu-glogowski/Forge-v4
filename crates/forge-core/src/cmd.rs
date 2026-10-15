@@ -107,8 +107,13 @@ done
 impl SudoSession {
     pub fn start() -> Result<Self> {
         prompt_sudo()?;
+        let stdbuf = if std::path::Path::new("/run/current-system/sw/bin/stdbuf").exists() {
+            "/run/current-system/sw/bin/stdbuf"
+        } else {
+            "/usr/bin/stdbuf"
+        };
         let mut child = command("sudo")
-            .args(["-n", "/usr/bin/stdbuf", "-oL", "/bin/sh", "-c", HELPER])
+            .args(["-n", stdbuf, "-oL", "/bin/sh", "-c", HELPER])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

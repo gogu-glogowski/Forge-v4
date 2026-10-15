@@ -31,3 +31,23 @@ root hook only after stopping guests. A manual ~/.local/bin/forge can shadow it.
 Do not treat this RPM as an openSUSE/RHEL port: their packages, confinement and
 libvirt service defaults must be checked independently. Silverblue/Kinoite and
 other immutable desktops need additional host-integration validation.
+
+## AlmaLinux / Rocky Linux 10+ candidate
+
+`python3 packaging/rpm/build.py --target el10 --output /tmp/forge-el10`
+builds a separate `1.el10` RPM requiring AlmaLinux or Rocky release >=10. It does
+not reuse Fedora's release dependency. The same glibc >=2.39 floor applies.
+Package availability (notably Boxes, mpv and 7zip) must be checked in the enabled
+EL10 repositories; no EPEL/CRB repository is silently added. Native dependency
+resolution and physical VM start/stop are pending. Do not install this on EL9.
+
+### Known EL10 blocker (2026-10-15)
+
+The inspected AlmaLinux 10.2 DVD and EPEL 10.2 repositories do not contain
+native gnome-boxes. The candidate RPM is therefore not a normally installable
+complete port with those repositories alone. RHEL 10 also removed SPICE support;
+AlmaLinux 10 explicitly restored it, so Alma and Rocky need separate runtime audits.
+Forge currently emits SPICE graphics/channel XML. Do not bypass dependencies or
+replace native Boxes with Flatpak and assume equivalent system-libvirt integration.
+References: https://almalinux.org/blog/2025-05-27-welcoming-almalinux-10/ and
+https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html-single/configuring_and_managing_linux_virtual_machines/index

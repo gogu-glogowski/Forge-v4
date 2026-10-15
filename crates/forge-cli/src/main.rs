@@ -353,7 +353,7 @@ fn run_dev(command: DevCommands) -> Result<(), ForgeError> {
         DevCommands::Hook => {
             let forge = Forge::open_paths(forge_core::ForgePaths::discover())?;
             forge.install_hook()?;
-            println!("qemu hook installed at /etc/libvirt/hooks/qemu");
+            println!("qemu hook installed");
             Ok(())
         }
     }

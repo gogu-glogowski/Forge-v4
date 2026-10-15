@@ -67,6 +67,23 @@ driver. Manjaro's actual build must be checked separately. Forge retains its ref
 to run unconfined guests. These packages were built locally on Pop!_OS; clean
 Fedora/Arch/Manjaro desktop VM smoke tests remain pending. No ISO is built.
 
+## Additional experimental ports and installation lab
+
+Local candidates now include Void Linux glibc x86_64 (XBPS/runit), NixOS (native
+Nix package and declarative module), AlmaLinux/Rocky 10+ (EL10 RPM), and explicit
+Mint/Zorin recognition in the Debian family. These are **physical-test candidates**;
+existing release download links above still refer to the published 4.2.0 packages.
+
+- [Void XBPS build and runit requirements](packaging/void/README.md)
+- [NixOS package/module and AppArmor layout](packaging/nixos/README.md)
+- [Installation lab, GNOME default and optional desktops (Polish)](installer-lab/README.PL.md)
+
+The installer kit preserves existing Ventoy configuration and leaves disk selection
+interactive. Ansible configures an installed host; it does not replace every native
+OS installer. New physical guest start/stop and confinement checks remain pending.
+EL10 is currently blocked by native Boxes availability; its SPICE stack also differs
+(Alma restored SPICE, while RHEL 10 removed it). See the RPM requirements.
+
 ## Choose a network mode
 
 | Mode | Internet for Kali and Whonix Gateway | Extra hardware |

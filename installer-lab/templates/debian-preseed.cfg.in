@@ -1,0 +1,13 @@
+# Interactive disk selection/partitioning. No automatic disk erase directives.
+d-i debian-installer/locale string pl_PL.UTF-8
+d-i keyboard-configuration/xkb-keymap select pl
+d-i time/zone string Europe/Warsaw
+d-i passwd/root-login boolean false
+d-i passwd/user-fullname string Major
+d-i passwd/username string major
+d-i passwd/user-password-crypted password @PASSWORD_HASH@
+d-i user-setup/allow-password-weak boolean false
+tasksel tasksel/first multiselect standard, @DEBIAN_TASK@
+d-i pkgsel/include string sudo network-manager python3 ansible-core
+d-i partman/confirm boolean false
+d-i partman/confirm_nooverwrite boolean false

@@ -1,0 +1,15 @@
+#cloud-config
+autoinstall:
+  version: 1
+  interactive-sections: [storage]
+  locale: pl_PL.UTF-8
+  keyboard:
+    layout: pl
+  timezone: Europe/Warsaw
+  identity:
+    hostname: forge-ubuntu
+    username: major
+    realname: Major
+    password: '@PASSWORD_HASH@'
+  packages: [python3, ansible-core]
+  # The desktop ISO already contains GNOME. No storage layout is supplied.

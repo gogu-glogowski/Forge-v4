@@ -11,6 +11,12 @@ pub enum Distribution {
     Debian,
     Ubuntu,
     Pop,
+    Mint,
+    Zorin,
+    Alma,
+    Rocky,
+    Void,
+    Nixos,
     Unknown,
 }
 
@@ -33,6 +39,12 @@ impl OsRelease {
             "debian" => Distribution::Debian,
             "ubuntu" => Distribution::Ubuntu,
             "pop" => Distribution::Pop,
+            "linuxmint" => Distribution::Mint,
+            "zorin" => Distribution::Zorin,
+            "almalinux" => Distribution::Alma,
+            "rocky" => Distribution::Rocky,
+            "void" => Distribution::Void,
+            "nixos" => Distribution::Nixos,
             _ => Distribution::Unknown,
         };
         Self {
@@ -54,6 +66,14 @@ impl OsRelease {
         }
     }
 
+    pub fn libvirt_config_dir(&self) -> &'static str {
+        if self.distribution == Distribution::Nixos {
+            "/var/lib/libvirt"
+        } else {
+            "/etc/libvirt"
+        }
+    }
+
     pub fn major_version(&self) -> Option<u32> {
         self.version.split('.').next()?.parse().ok()
     }
@@ -61,7 +81,26 @@ impl OsRelease {
     pub fn install_hint(&self, dependency: Dependency) -> Option<String> {
         let package = match self.distribution {
             Distribution::Fedora => dependency.fedora_package,
-            Distribution::Debian | Distribution::Ubuntu | Distribution::Pop => {
+            Distribution::Alma | Distribution::Rocky => match dependency.name {
+                "7z" => "7zip",
+                "libvirt virsh" => "libvirt-client libvirt-daemon-kvm",
+                _ => dependency.fedora_package,
+            },
+            Distribution::Void => match dependency.name {
+                "QEMU" | "qemu-img" => "qemu",
+                "libvirt virsh" => "libvirt",
+                "NetworkManager CLI" => "NetworkManager",
+                "systemctl" => "runit",
+                "D-Bus busctl" => return None,
+                "GnuPG" => "gnupg",
+                "7z" => "7zip",
+                "ps" | "pidof" => "procps-ng",
+                "ip" => "iproute2",
+                "getent" => "glibc",
+                _ => dependency.arch_package,
+            },
+            Distribution::Nixos => return Some("Declare Forge's NixOS module in configuration.nix, then run sudo nixos-rebuild switch".to_owned()),
+            Distribution::Debian | Distribution::Ubuntu | Distribution::Pop | Distribution::Mint | Distribution::Zorin => {
                 if dependency.name == "7z" && self.legacy_seven_zip() {
                     "p7zip-full"
                 } else {
@@ -72,7 +111,8 @@ impl OsRelease {
             Distribution::Unknown => return None,
         };
         let manager = match self.distribution {
-            Distribution::Fedora => "dnf install",
+            Distribution::Fedora | Distribution::Alma | Distribution::Rocky => "dnf install",
+            Distribution::Void => "xbps-install -S",
             Distribution::Arch | Distribution::Manjaro => "pacman -S --needed",
             _ => "apt install",
         };
@@ -86,6 +126,8 @@ impl OsRelease {
         match self.distribution {
             Distribution::Debian => major < 13,
             Distribution::Ubuntu | Distribution::Pop => major < 24,
+            Distribution::Mint => major < 22,
+            Distribution::Zorin => major < 18,
             _ => false,
         }
     }
@@ -121,6 +163,12 @@ pub struct Dependency {
     pub arch_package: &'static str,
     pub debian_package: &'static str,
     pub required: bool,
+}
+
+/// Root-owned os-release determines layout; no environment overrides in hooks.
+pub fn libvirt_config_dir() -> &'static str {
+    OsRelease::parse(&fs::read_to_string("/etc/os-release").unwrap_or_default())
+        .libvirt_config_dir()
 }
 
 pub const DEPENDENCIES: &[Dependency] = &[
@@ -377,6 +425,7 @@ pub struct Host {
     pub os: OsRelease,
     pub architecture: String,
     pub systemd: bool,
+    pub runit: bool,
     pub desktop_session: Option<String>,
     pub native_boxes: bool,
     pub services: Vec<Service>,
@@ -395,6 +444,9 @@ impl Host {
     }
 
     pub fn libvirt_activation_hint(&self) -> Option<String> {
+        if self.runit {
+            return Some("sudo ln -s /etc/sv/libvirtd /var/service/  # only if not enabled; also enable virtlogd and virtlockd".to_owned());
+        }
         // Prefer the mode already active. Do not suggest enabling both daemon families.
         let usable = |unit: &str| self.service(unit).is_some_and(Service::available);
         let active = |unit: &str| self.service(unit).is_some_and(Service::active);
@@ -438,7 +490,12 @@ impl Host {
             .or_else(|| probe.read("/usr/lib/os-release"))
             .unwrap_or_default();
         let os = OsRelease::parse(&release);
-        let config = probe.read("/etc/libvirt/qemu.conf").unwrap_or_default();
+        let config = probe
+            .read(&format!("{}/qemu.conf", os.libvirt_config_dir()))
+            .unwrap_or_default();
+        let runit = probe
+            .read("/proc/1/comm")
+            .is_some_and(|s| s.trim() == "runit");
         let selinux = match probe
             .read("/sys/fs/selinux/enforce")
             .as_deref()
@@ -479,6 +536,18 @@ impl Host {
         ]
         .into_iter()
         .map(|unit| {
+            if runit {
+                let name = unit.strip_suffix(".service");
+                let available = name.is_some_and(|n| probe.exists(&format!("/etc/sv/{n}")));
+                let active = name
+                    .and_then(|n| probe.output("sv", &["status", &format!("/var/service/{n}")]))
+                    .is_some_and(|s| s.starts_with("run:"));
+                return Service {
+                    unit: unit.to_owned(),
+                    load_state: if available { "loaded" } else { "not-found" }.to_owned(),
+                    active_state: if active { "active" } else { "inactive" }.to_owned(),
+                };
+            }
             let text = probe
                 .output(
                     "systemctl",
@@ -518,10 +587,13 @@ impl Host {
         let configured_group = group.as_deref().and_then(|g| resolve("group", g));
         let configured = configured_user.is_some() && configured_group.is_some();
         // Candidates are for diagnostics only. Never use these guesses for chown.
-        let candidates = if os.distribution == Distribution::Fedora {
-            ["qemu", "libvirt-qemu"]
-        } else {
-            ["libvirt-qemu", "qemu"]
+        let candidates = match os.distribution {
+            Distribution::Fedora | Distribution::Alma | Distribution::Rocky => {
+                ["qemu", "libvirt-qemu", "libvirt"]
+            }
+            Distribution::Void => ["libvirt", "qemu", "libvirt-qemu"],
+            Distribution::Nixos => ["qemu-libvirtd", "qemu", "libvirt-qemu"],
+            _ => ["libvirt-qemu", "qemu", "libvirt"],
         };
         let qemu = QemuIdentity {
             user: if user.is_some() {
@@ -532,15 +604,21 @@ impl Host {
             group: if group.is_some() {
                 configured_group
             } else {
-                ["qemu", "libvirt-qemu", "kvm"]
+                ["qemu", "libvirt-qemu", "qemu-libvirtd", "libvirt", "kvm"]
                     .iter()
                     .find_map(|g| resolve("group", g))
             },
             configured,
         };
         let native_boxes = match os.distribution {
-            Distribution::Fedora => probe.output("rpm", &["-q", "gnome-boxes"]).is_some(),
-            Distribution::Debian | Distribution::Ubuntu | Distribution::Pop => probe
+            Distribution::Fedora | Distribution::Alma | Distribution::Rocky => {
+                probe.output("rpm", &["-q", "gnome-boxes"]).is_some()
+            }
+            Distribution::Debian
+            | Distribution::Ubuntu
+            | Distribution::Pop
+            | Distribution::Mint
+            | Distribution::Zorin => probe
                 .output(
                     "dpkg-query",
                     &["-W", "-f=${db:Status-Status}", "gnome-boxes"],
@@ -549,6 +627,10 @@ impl Host {
             Distribution::Arch | Distribution::Manjaro => {
                 probe.output("pacman", &["-Q", "gnome-boxes"]).is_some()
             }
+            Distribution::Void => probe
+                .output("xbps-query", &["-p", "state", "gnome-boxes"])
+                .is_some_and(|s| s.trim() == "installed"),
+            Distribution::Nixos => probe.exists("/run/current-system/sw/bin/gnome-boxes"),
             Distribution::Unknown => false,
         };
         Self {
@@ -560,6 +642,7 @@ impl Host {
                 .trim()
                 .to_owned(),
             systemd: probe.exists("/run/systemd/system"),
+            runit,
             desktop_session: probe
                 .environment("XDG_SESSION_TYPE")
                 .filter(|s| s == "x11" || s == "wayland")
@@ -589,9 +672,20 @@ impl Host {
             qemu,
             tools: DEPENDENCIES
                 .iter()
-                .map(|dependency| Tool {
-                    dependency: *dependency,
-                    executable: probe.executable(dependency.alternatives),
+                .map(|dependency| {
+                    let mut dependency = *dependency;
+                    let executable = if runit && dependency.name == "systemctl" {
+                        probe.executable(&["sv"])
+                    } else {
+                        probe.executable(dependency.alternatives)
+                    };
+                    if runit && dependency.name == "D-Bus busctl" {
+                        dependency.required = false;
+                    }
+                    Tool {
+                        dependency,
+                        executable,
+                    }
                 })
                 .collect(),
         }
@@ -865,6 +959,87 @@ mod tests {
                 .executable
                 .as_deref(),
             Some("7zz")
+        );
+    }
+    #[test]
+    fn void_runit_snapshot_resolves_services_and_qemu_account() {
+        let host = Host::probe(
+            &Fixture::default()
+                .file("/etc/os-release", "ID=void")
+                .file("/proc/1/comm", "runit\n")
+                .file("/etc/sv/libvirtd", "")
+                .file("/etc/sv/NetworkManager", "")
+                .command(
+                    "sv",
+                    &["status", "/var/service/libvirtd"],
+                    "run: libvirtd: (pid 42) 1s",
+                )
+                .command(
+                    "sv",
+                    &["status", "/var/service/NetworkManager"],
+                    "run: NetworkManager: (pid 43) 1s",
+                )
+                .command(
+                    "getent",
+                    &["passwd", "libvirt"],
+                    "libvirt:x:100:100::/:/bin/false",
+                )
+                .command("xbps-query", &["-p", "state", "gnome-boxes"], "installed"),
+        );
+        assert!(host.runit);
+        assert!(!host.systemd);
+        assert!(host.service("libvirtd.service").unwrap().active());
+        assert!(!host.service("libvirtd.socket").unwrap().available());
+        assert!(host.native_boxes);
+        assert_eq!(host.qemu.user.as_deref(), Some("libvirt"));
+        assert!(
+            host.libvirt_activation_hint()
+                .unwrap()
+                .contains("/etc/sv/libvirtd")
+        );
+        let bus = host
+            .tools
+            .iter()
+            .find(|t| t.dependency.name == "D-Bus busctl")
+            .unwrap();
+        assert!(!bus.dependency.required);
+    }
+
+    #[test]
+    fn nixos_uses_declared_libvirt_layout_and_account() {
+        let host = Host::probe(
+            &Fixture::default()
+                .file("/etc/os-release", "ID=nixos")
+                .file(
+                    "/var/lib/libvirt/qemu.conf",
+                    "user = 'qemu-libvirtd'\ngroup = 'qemu-libvirtd'",
+                )
+                .command(
+                    "getent",
+                    &["passwd", "qemu-libvirtd"],
+                    "qemu-libvirtd:x:100:100::/:/bin/false",
+                )
+                .command(
+                    "getent",
+                    &["group", "qemu-libvirtd"],
+                    "qemu-libvirtd:x:100:",
+                ),
+        );
+        assert_eq!(host.os.libvirt_config_dir(), "/var/lib/libvirt");
+        assert!(host.qemu.configured);
+        assert_eq!(
+            OsRelease::parse("ID=void").libvirt_config_dir(),
+            "/etc/libvirt"
+        );
+        for id in ["linuxmint", "zorin", "almalinux", "rocky", "void", "nixos"] {
+            assert_ne!(
+                OsRelease::parse(&format!("ID={id}")).distribution,
+                Distribution::Unknown
+            );
+        }
+        assert_eq!(
+            OsRelease::parse("ID=other\nID_LIKE=nixos").distribution,
+            Distribution::Unknown
         );
     }
 }

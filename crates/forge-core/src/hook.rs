@@ -26,12 +26,19 @@ use crate::usb;
 use crate::virt;
 use crate::xml;
 
-pub const HOOK_PATH: &str = "/etc/libvirt/hooks/qemu";
+pub fn hook_path() -> String {
+    format!("{}/hooks/qemu", crate::host::libvirt_config_dir())
+}
 const OPERATOR_PATH: &str = "/var/lib/forge/operator";
 /// `/etc/libvirt` is mode 0700, so the operator cannot stat the hook itself.
 /// The install writes this root-owned stamp beside the lab; only root can create it.
 const HOOK_STAMP: &str = "/var/lib/forge/hook-installed";
-const WAN_XML: &str = "/etc/libvirt/qemu/networks/forge-wan.xml";
+fn network_xml(name: &str) -> String {
+    format!(
+        "{}/qemu/networks/{name}.xml",
+        crate::host::libvirt_config_dir()
+    )
+}
 const PID_DIR: &str = "/run/libvirt/qemu";
 const HOOK_LOG: &str = "/var/lib/forge/hook.log";
 const XML_CAP: usize = 2 * 1024 * 1024;
@@ -175,6 +182,8 @@ pub(crate) fn ensure_installed_for(paths: &ForgePaths, mode: crate::network::Mod
     let security_setup = policy.helper_script(paths)?;
     let security_stamp = policy.install_stamp_script();
     let network_stamp = mode.install_script();
+    let hook = hook_path();
+    let hook_dir = format!("{}/hooks", crate::host::libvirt_config_dir());
     let hook_label = if policy == crate::security::Policy::Selinux {
         "restorecon -F /etc/libvirt/hooks /etc/libvirt/hooks/qemu"
     } else {
@@ -184,11 +193,11 @@ pub(crate) fn ensure_installed_for(paths: &ForgePaths, mode: crate::network::Mod
         "
 set -eu
 {security_setup}
-install -d -m 0755 -o root -g root /etc/libvirt/hooks
-install -m 0755 -o root -g root '{exe}' /etc/libvirt/hooks/qemu.new
-mv -f /etc/libvirt/hooks/qemu.new /etc/libvirt/hooks/qemu
-chown root:root /etc/libvirt/hooks/qemu
-chmod 0755 /etc/libvirt/hooks/qemu
+install -d -m 0755 -o root -g root {hook_dir}
+install -m 0755 -o root -g root '{exe}' {hook}.new
+mv -f {hook}.new {hook}
+chown root:root {hook}
+chmod 0755 {hook}
 {hook_label}
 install -d -m 0755 -o root -g root /var/lib/forge
 touch /var/lib/forge/network.lock
@@ -203,13 +212,18 @@ chown root:root /var/lib/forge/operator
 chmod 0644 /var/lib/forge/operator
 {security_stamp}
 {network_stamp}
-echo sha256=$(sha256sum /etc/libvirt/hooks/qemu | awk '{{print $1}}') > /var/lib/forge/hook-installed
+echo sha256=$(sha256sum {hook} | awk '{{print $1}}') > /var/lib/forge/hook-installed
 chown root:root /var/lib/forge/hook-installed
 chmod 0644 /var/lib/forge/hook-installed
-if systemctl is-active --quiet virtqemud.service; then
+if [ -d /run/systemd/system ] && systemctl is-active --quiet virtqemud.service; then
   systemctl restart virtqemud.service
-elif systemctl is-active --quiet libvirtd.service; then
+elif [ -d /run/systemd/system ] && systemctl is-active --quiet libvirtd.service; then
   systemctl restart libvirtd.service
+elif command -v sv >/dev/null && sv status /var/service/libvirtd >/dev/null 2>&1; then
+  sv restart /var/service/libvirtd
+else
+  echo 'No active supported libvirt daemon; hook installed but restart failed' >&2
+  exit 1
 fi
 "
     );
@@ -238,7 +252,7 @@ pub fn doctor() -> HookDoctor {
         Ok(true) => HookDoctor {
             kind: HookDoctorKind::Ok,
             detail: format!(
-                "{HOOK_PATH} owns start/stop for Forge domains (digest, role, dongle B)"
+                "{} owns start/stop for Forge domains (digest, role, dongle B)", hook_path()
             ),
             fix: None,
         },
@@ -304,16 +318,17 @@ fn libvirt_event(args: &[String]) -> Result<()> {
             } else {
                 (Dongle::Absent, None, false)
             };
-            let wan =
-                if role == Role::WhonixGw && (needs_policy(phase) || phase == Phase::Reconnect) {
-                    Some(fs::read_to_string(WAN_XML).map_err(|error| {
+            let wan = if role == Role::WhonixGw
+                && (needs_policy(phase) || phase == Phase::Reconnect)
+            {
+                Some(fs::read_to_string(network_xml("forge-wan")).map_err(|error| {
                     ForgeError::Role(format!(
-                        "cannot read {WAN_XML} ({error}); `forge start {WHONIX_GW_NAME}` defines it"
+                        "cannot read Forge WAN network XML ({error}); `forge start {WHONIX_GW_NAME}` defines it"
                     ))
                 })?)
-                } else {
-                    None
-                };
+            } else {
+                None
+            };
             if network_mode == crate::network::Mode::Dedicated
                 && own.role()? == Role::WhonixWs
                 && matches!(phase, Phase::Prepare | Phase::Start | Phase::Restore)
@@ -330,9 +345,7 @@ fn libvirt_event(args: &[String]) -> Result<()> {
             let private_xml = if matches!(role, Role::WhonixGw | Role::WhonixWs)
                 && (needs_policy(phase) || phase == Phase::Reconnect)
             {
-                Some(fs::read_to_string(
-                    "/etc/libvirt/qemu/networks/forge-whonix.xml",
-                )?)
+                Some(fs::read_to_string(network_xml("forge-whonix"))?)
             } else {
                 None
             };
@@ -340,9 +353,7 @@ fn libvirt_event(args: &[String]) -> Result<()> {
                 && role == Role::OsintClearnet
                 && (needs_policy(phase) || phase == Phase::Reconnect)
             {
-                Some(fs::read_to_string(
-                    "/etc/libvirt/qemu/networks/forge-standard.xml",
-                )?)
+                Some(fs::read_to_string(network_xml("forge-standard"))?)
             } else {
                 None
             };
@@ -430,7 +441,7 @@ fn schedule(args: &[&str]) {
     {
         return;
     }
-    let mut child = Command::new(HOOK_PATH);
+    let mut child = Command::new(hook_path());
     child
         .args(args)
         .stdin(Stdio::null())
@@ -892,7 +903,7 @@ fn stamp_sha256(text: &str) -> Option<&str> {
 }
 
 fn invoked_path_ok() -> bool {
-    let Ok(meta) = fs::symlink_metadata(HOOK_PATH) else {
+    let Ok(meta) = fs::symlink_metadata(hook_path()) else {
         return false;
     };
     meta.file_type().is_file() && meta.uid() == 0 && meta.permissions().mode() & 0o022 == 0
@@ -905,10 +916,10 @@ fn invoked_as_installed_hook() -> bool {
     let Ok(exe) = fs::read_link("/proc/self/exe") else {
         return false;
     };
-    if exe != Path::new(HOOK_PATH) {
+    if exe != Path::new(&hook_path()) {
         return false;
     }
-    let Ok(hook_meta) = fs::metadata(HOOK_PATH) else {
+    let Ok(hook_meta) = fs::metadata(hook_path()) else {
         return false;
     };
     let Ok(exe_meta) = fs::metadata("/proc/self/exe") else {

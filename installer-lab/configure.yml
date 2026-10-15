@@ -1,0 +1,366 @@
+- name: Configure the installed Forge test desktop
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+  vars:
+    forge_desktop: gnome
+    forge_operator: major
+    forge_display_name: Major
+    forge_supported_ids:
+    - debian
+    - ubuntu
+    - pop
+    - linuxmint
+    - zorin
+    - fedora
+    - almalinux
+    - rocky
+    - arch
+    - manjaro
+    - void
+    forge_packages:
+      Debian:
+      - qemu-system-x86
+      - qemu-utils
+      - libvirt-daemon-system
+      - libvirt-clients
+      - gnome-boxes
+      - network-manager
+      - dnsmasq-base
+      - nftables
+      - curl
+      - gnupg
+      - e2fsprogs
+      - iproute2
+      - sudo
+      - mpv
+      - apparmor
+      - apparmor-utils
+      - git
+      - gcc
+      RedHat:
+      - qemu-kvm
+      - qemu-img
+      - libvirt
+      - libvirt-client
+      - gnome-boxes
+      - NetworkManager
+      - dnsmasq
+      - nftables
+      - curl
+      - gnupg2
+      - e2fsprogs
+      - iproute
+      - sudo
+      - mpv
+      - policycoreutils-python-utils
+      - git
+      - gcc
+      Archlinux:
+      - qemu-desktop
+      - qemu-img
+      - libvirt
+      - gnome-boxes
+      - networkmanager
+      - dnsmasq
+      - nftables
+      - curl
+      - gnupg
+      - e2fsprogs
+      - iproute2
+      - sudo
+      - mpv
+      - apparmor
+      - git
+      - gcc
+      - 7zip
+      Void:
+      - glibc-locales
+      - qemu
+      - libvirt
+      - gnome-boxes
+      - NetworkManager
+      - dbus
+      - dnsmasq
+      - nftables
+      - curl
+      - gnupg
+      - e2fsprogs
+      - iproute2
+      - sudo
+      - mpv
+      - apparmor
+      - git
+      - gcc
+      - 7zip
+    forge_desktop_packages:
+      Debian:
+        gnome:
+        - gnome-core
+        - gdm3
+        xfce:
+        - xfce4
+        - xfce4-goodies
+        - lightdm
+      RedHat:
+        gnome:
+        - gnome-shell
+        - gnome-session
+        - gdm
+        xfce:
+        - xfce4-session
+        - xfce4-panel
+        - xfce4-settings
+        - xfdesktop
+        - Thunar
+        - lightdm
+      Archlinux:
+        gnome:
+        - gnome-shell
+        - gnome-session
+        - gdm
+        xfce:
+        - xfce4
+        - xfce4-goodies
+        - lightdm
+        - lightdm-gtk-greeter
+        cosmic:
+        - cosmic-session
+        - cosmic-greeter
+      Void:
+        gnome:
+        - gnome
+        - gdm
+        xfce:
+        - xfce4
+        - lightdm
+        - lightdm-gtk3-greeter
+    forge_family: '{{ ''Void'' if forge_os.ID == ''void'' else ansible_os_family }}'
+  tasks:
+  - name: Read actual distribution ID
+    ansible.builtin.slurp:
+      src: /etc/os-release
+    register: forge_release
+    tags:
+    - validate
+  - name: Parse distribution metadata without executing a shell
+    ansible.builtin.set_fact:
+      forge_os: '{{ dict((forge_release.content | b64decode).splitlines() | select(''match'', ''^[A-Z_]+='') | map(''split'',
+        ''='', 1)) }}'
+    tags:
+    - validate
+  - name: Normalize quoted release ID
+    ansible.builtin.set_fact:
+      forge_os: '{{ forge_os | combine({''ID'': forge_os.ID | replace(''"'', '''') | replace("''", '''')}) }}'
+    tags:
+    - validate
+  - name: Validate chosen target and desktop
+    ansible.builtin.assert:
+      that:
+      - forge_os.ID in forge_supported_ids
+      - forge_desktop in ['gnome', 'cosmic', 'xfce']
+      - forge_operator == 'major'
+      fail_msg: NixOS uses the supplied declarative module. Do not run this playbook on an unsupported host.
+    tags:
+    - validate
+  - name: Require an existing operator from the native installer
+    ansible.builtin.getent:
+      database: passwd
+      key: '{{ forge_operator }}'
+    tags:
+    - validate
+  - name: Select desktop packages
+    ansible.builtin.set_fact:
+      forge_selected_desktop: '{{ forge_desktop_packages[forge_family][forge_desktop] | default([]) }}'
+    tags:
+    - validate
+  - name: Refuse unavailable desktop mapping
+    ansible.builtin.assert:
+      that: forge_selected_desktop | length > 0
+      fail_msg: This desktop has no verified mapping for this family. Use GNOME/XFCE or install its official desktop
+        edition; no third-party repository is added.
+    tags:
+    - validate
+  - name: Refuse configuration in a live installer session
+    ansible.builtin.assert:
+      that: ansible_mounts | selectattr('mount', 'equalto', '/') | selectattr('fstype', 'in', ['overlay', 'squashfs',
+        'aufs']) | list | length == 0
+      fail_msg: Install and boot the target system before running this playbook.
+  - name: Inspect running guests before changing virtualization packages
+    ansible.builtin.command:
+      argv:
+      - ps
+      - -eo
+      - comm
+    register: forge_processes
+    changed_when: false
+    check_mode: false
+  - name: Require stopped QEMU guests
+    ansible.builtin.assert:
+      that: forge_processes.stdout_lines | select('match', '^qemu-(system|kvm)') | list | length == 0
+      fail_msg: Stop all QEMU guests before configuring the lab.
+  - name: Detect conflicting systemd network managers
+    ansible.builtin.command:
+      argv:
+      - systemctl
+      - is-active
+      - systemd-networkd.service
+      - dhcpcd.service
+    register: forge_network_conflicts
+    changed_when: false
+    failed_when: false
+    check_mode: false
+    when: forge_family != 'Void'
+  - name: Require a deliberate switch from other network managers
+    ansible.builtin.assert:
+      that: '''active'' not in (forge_network_conflicts.stdout_lines | default([]))'
+      fail_msg: An existing network manager is active. Switch the installed desktop to NetworkManager first; the
+        playbook will not disconnect it automatically.
+    when: forge_family != 'Void'
+  - name: Inspect Void dhcpcd service
+    ansible.builtin.command:
+      argv:
+      - sv
+      - status
+      - /var/service/dhcpcd
+    register: forge_dhcpcd
+    changed_when: false
+    failed_when: false
+    check_mode: false
+    when: forge_family == 'Void'
+  - name: Require a deliberate Void network-manager switch
+    ansible.builtin.assert:
+      that: not (forge_dhcpcd.stdout | default('')).startswith('run:')
+      fail_msg: Switch from dhcpcd to NetworkManager manually before configuration.
+    when: forge_family == 'Void'
+  - name: Check native Boxes availability on EL10 before changing packages
+    ansible.builtin.shell: rpm -q gnome-boxes >/dev/null 2>&1 || dnf list --available gnome-boxes
+    register: forge_el_boxes
+    changed_when: false
+    failed_when: false
+    check_mode: false
+    when: forge_os.ID in ['almalinux', 'rocky']
+  - name: Refuse an incomplete EL10 virtualization stack
+    ansible.builtin.assert:
+      that: forge_el_boxes.rc == 0
+      fail_msg: Native GNOME Boxes is missing from enabled repositories. EL10 port is blocked; RPM existence does
+        not mean host support. Inspect SPICE availability too.
+    when: forge_os.ID in ['almalinux', 'rocky']
+  - name: Install packages on Debian family
+    ansible.builtin.apt:
+      name: '{{ forge_packages.Debian + forge_selected_desktop }}'
+      state: present
+      update_cache: true
+    when: forge_family == 'Debian'
+  - name: Install available 7zip alternative on Debian family
+    ansible.builtin.shell: 'if apt-cache show 7zip >/dev/null 2>&1; then apt-get install -y 7zip; else apt-get install
+      -y p7zip-full; fi
+
+      '
+    args:
+      executable: /bin/sh
+    when: forge_family == 'Debian'
+    changed_when: true
+  - name: Install packages on RPM family
+    ansible.builtin.dnf:
+      name: '{{ forge_packages.RedHat + forge_selected_desktop }}'
+      state: present
+    when: forge_family == 'RedHat'
+  - name: Install packages on Arch family without partial upgrades
+    ansible.builtin.command:
+      argv: '{{ [''pacman'', ''-Syu'', ''--needed'', ''--noconfirm''] + forge_packages.Archlinux + forge_selected_desktop
+        }}'
+    when: forge_family == 'Archlinux'
+    changed_when: true
+  - name: Update Void and install packages
+    ansible.builtin.command:
+      argv: '{{ [''xbps-install'', ''-Suy''] + forge_packages.Void + forge_selected_desktop }}'
+    when: forge_family == 'Void'
+    changed_when: true
+  - name: Set timezone
+    ansible.builtin.file:
+      src: /usr/share/zoneinfo/Europe/Warsaw
+      dest: /etc/localtime
+      state: link
+      force: true
+  - name: Enable Polish UTF-8 locale on locale-gen systems
+    ansible.builtin.lineinfile:
+      path: '{{ ''/etc/default/libc-locales'' if forge_family == ''Void'' else ''/etc/locale.gen'' }}'
+      regexp: ^#?\s*pl_PL.UTF-8\s+UTF-8
+      line: pl_PL.UTF-8 UTF-8
+      create: true
+      mode: '0644'
+    when: forge_family in ['Debian', 'Archlinux', 'Void']
+    register: forge_locale
+  - name: Generate locales
+    ansible.builtin.command:
+      argv: '{{ [''xbps-reconfigure'', ''-f'', ''glibc-locales''] if forge_family == ''Void'' else [''locale-gen'']
+        }}'
+    when: forge_family in ['Debian', 'Archlinux', 'Void'] and forge_locale.changed
+    changed_when: true
+  - name: Install Polish language pack on RPM hosts
+    ansible.builtin.dnf:
+      name: glibc-langpack-pl
+      state: present
+    when: forge_family == 'RedHat'
+  - name: Set default language
+    ansible.builtin.lineinfile:
+      path: '{{ ''/etc/default/locale'' if forge_family == ''Debian'' else ''/etc/locale.conf'' }}'
+      regexp: ^LANG=
+      line: LANG=pl_PL.UTF-8
+      create: true
+      mode: '0644'
+  - name: Set Polish console keyboard
+    ansible.builtin.lineinfile:
+      path: /etc/vconsole.conf
+      regexp: ^KEYMAP=
+      line: KEYMAP=pl
+      create: true
+      mode: '0644'
+    when: forge_family != 'Void'
+  - name: Set operator display name and add lab groups
+    ansible.builtin.user:
+      name: '{{ forge_operator }}'
+      comment: '{{ forge_display_name }}'
+      groups: libvirt,kvm
+      append: true
+  - name: Detect an already active modular libvirt daemon
+    ansible.builtin.command:
+      argv:
+      - systemctl
+      - is-active
+      - virtqemud.service
+      - virtqemud.socket
+    register: forge_modular
+    changed_when: false
+    failed_when: false
+    when: forge_family != 'Void'
+  - name: Enable libvirt and NetworkManager on systemd desktops
+    ansible.builtin.systemd_service:
+      name: '{{ item }}'
+      enabled: true
+      state: started
+    loop: '{{ [''virtqemud.socket'', ''virtnetworkd.socket'', ''virtstoraged.socket'', ''virtlogd.socket'', ''virtlockd.socket'',
+      ''NetworkManager''] if ''active'' in (forge_modular.stdout_lines | default([])) else [''libvirtd'', ''NetworkManager'']
+      }}'
+    when: forge_family != 'Void'
+  - name: Enable Void runit services without replacing existing links
+    ansible.builtin.command:
+      argv:
+      - ln
+      - -s
+      - /etc/sv/{{ item }}
+      - /var/service/{{ item }}
+      creates: /var/service/{{ item }}
+    loop:
+    - dbus
+    - NetworkManager
+    - virtlogd
+    - virtlockd
+    - libvirtd
+    when: forge_family == 'Void'
+  - name: Report remaining physical validation
+    ansible.builtin.debug:
+      msg: Log out and back in. Run forge doctor, inspect confinement, stop guests, then forge setup --network standard.
+        No VM images, partitions or Forge hooks were modified by this playbook.

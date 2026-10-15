@@ -76,7 +76,8 @@ pub fn run() -> Result<DoctorReport> {
             fix: Some(format!(
                 "{}\nsudo usermod -aG libvirt \"$USER\"  # then log out",
                 host.libvirt_activation_hint().unwrap_or_else(|| {
-                    "Install the system libvirt daemon and inspect its systemd units".to_owned()
+                    "Install the system libvirt daemon and inspect the host service manager"
+                        .to_owned()
                 })
             )),
         }),
@@ -119,7 +120,15 @@ fn distribution_check(os: &OsRelease) -> Check {
             CheckStatus::Fail,
             format!("{} — Forge requires Fedora 44 or newer", os.pretty_name),
         ),
-        Distribution::Debian | Distribution::Ubuntu | Distribution::Pop => (
+        Distribution::Debian
+        | Distribution::Ubuntu
+        | Distribution::Pop
+        | Distribution::Mint
+        | Distribution::Zorin
+        | Distribution::Alma
+        | Distribution::Rocky
+        | Distribution::Void
+        | Distribution::Nixos => (
             CheckStatus::Ok,
             format!(
                 "{} — recognized port target; runtime support checked separately",
@@ -148,7 +157,7 @@ fn distribution_check(os: &OsRelease) -> Check {
         name: "Host".to_owned(),
         detail,
         fix: (status == CheckStatus::Fail).then(|| {
-            "Use Fedora 44+ or a recognized Debian, Ubuntu Pop!_OS, Arch or Manjaro port target.".to_owned()
+            "Use a recognized distribution and inspect its port readiness and confinement checks.".to_owned()
         }),
     }
 }
@@ -168,14 +177,18 @@ fn host_checks(host: &Host) -> Vec<Check> {
             .then(|| "Forge guests require an x86_64 host.".to_owned()),
     });
     checks.push(Check {
-        status: if host.systemd {
+        status: if host.systemd || host.runit {
             CheckStatus::Ok
         } else {
             CheckStatus::Fail
         },
-        name: "systemd".to_owned(),
-        detail: if host.systemd {
-            "running"
+        name: if host.runit { "runit" } else { "systemd" }.to_owned(),
+        detail: if host.systemd || host.runit {
+            if host.runit {
+                "runit running"
+            } else {
+                "systemd running"
+            }
         } else {
             "not detected as host service manager"
         }
@@ -201,7 +214,7 @@ fn host_checks(host: &Host) -> Vec<Check> {
     checks.push(Check {
         status: if nm_active { CheckStatus::Ok } else { CheckStatus::Fail },
         name: "NetworkManager service".to_owned(), detail: if nm_active { "active" } else { "not active or cannot be inspected; this port requires NetworkManager" }.to_owned(),
-        fix: (!nm_active).then(|| "Inspect systemctl status NetworkManager.service; configure the desktop to use NetworkManager.".to_owned()),
+        fix: (!nm_active).then(|| if host.runit { "Inspect sv status /var/service/NetworkManager; enable the runit service and use NetworkManager.".to_owned() } else { "Inspect systemctl status NetworkManager.service; configure the desktop to use NetworkManager.".to_owned() }),
     });
     let daemon_units: Vec<_> = host
         .services
@@ -279,6 +292,12 @@ fn host_checks(host: &Host) -> Vec<Check> {
             | Distribution::Pop
             | Distribution::Arch
             | Distribution::Manjaro
+            | Distribution::Mint
+            | Distribution::Zorin
+            | Distribution::Alma
+            | Distribution::Rocky
+            | Distribution::Void
+            | Distribution::Nixos
     ) {
         checks.push(Check {
             status: if host.os.distribution == Distribution::Pop && host.os.version == "24.04" {
@@ -288,6 +307,8 @@ fn host_checks(host: &Host) -> Vec<Check> {
             }, name: "port readiness".to_owned(),
             detail: if matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro) {
                 "Rolling target recognized. Stock Arch libvirt disables AppArmor/SELinux drivers; a compatible confined libvirt build is required. Manjaro capabilities must be checked separately; firewall integration and live VM validation remain pending.".to_owned()
+            } else if matches!(host.os.distribution, Distribution::Void | Distribution::Nixos | Distribution::Alma | Distribution::Rocky | Distribution::Mint | Distribution::Zorin) {
+                "Experimental port: native dependency resolution, security confinement and physical start/stop validation are pending; run all host checks before preparing guests.".to_owned()
             } else {
                 "Standard mode was exercised on Pop!_OS 24.04 with AppArmor, Boxes and Whonix; firewall integration across distributions and dedicated A/B hardware validation remain pending.".to_owned()
             },
@@ -299,7 +320,10 @@ fn host_checks(host: &Host) -> Vec<Check> {
 
 fn security_checks(host: &Host) -> Vec<Check> {
     let selinux_ok = host.security.selinux == SecurityState::Enforcing;
-    let fedora = host.os.distribution == Distribution::Fedora;
+    let fedora = matches!(
+        host.os.distribution,
+        Distribution::Fedora | Distribution::Alma | Distribution::Rocky
+    );
     vec![
         Check {
             status: if selinux_ok {
@@ -824,6 +848,7 @@ mod tests {
             os: OsRelease::parse(release),
             architecture: "x86_64".to_owned(),
             systemd: true,
+            runit: false,
             desktop_session: Some("wayland".to_owned()),
             native_boxes: true,
             services: vec![

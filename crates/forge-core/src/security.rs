@@ -118,6 +118,11 @@ impl Policy {
             return Ok(String::new());
         }
         validate_paths(paths)?;
+        let profile_dir = if crate::host::libvirt_config_dir() == "/var/lib/libvirt" {
+            "/var/lib/apparmor.d"
+        } else {
+            "/etc/apparmor.d"
+        };
         let bases = paths.bases.display();
         let vms = paths.vms.display();
         Ok(format!(
@@ -125,32 +130,32 @@ impl Policy {
 command -v apparmor_parser >/dev/null
 profile=''
 for name in usr.lib.libvirt.virt-aa-helper usr.libexec.virt-aa-helper; do
-  candidate="/etc/apparmor.d/$name"
+  candidate="{profile_dir}/$name"
   if [ -f "$candidate" ]; then profile="$candidate"; break; fi
 done
 [ -n "$profile" ] || {{ echo 'AppArmor virt-aa-helper profile missing' >&2; exit 1; }}
 name=${{profile##*/}}
-local="/etc/apparmor.d/local/$name"
-[ ! -L "$local" ] && [ ! -L /etc/apparmor.d/local/forge-virt-aa-helper ]
+local="{profile_dir}/local/$name"
+[ ! -L "$local" ] && [ ! -L {profile_dir}/local/forge-virt-aa-helper ]
 grep -F "local/$name" "$profile" >/dev/null || {{ echo 'virt-aa-helper profile has no local include; configure it before installing the Forge hook' >&2; exit 1; }}
-install -d -m 0755 -o root -g root /etc/apparmor.d/local
-cat > /etc/apparmor.d/local/forge-virt-aa-helper.new <<'FORGE_AA'
+install -d -m 0755 -o root -g root {profile_dir}/local
+cat > {profile_dir}/local/forge-virt-aa-helper.new <<'FORGE_AA'
 # Forge: image inspection by virt-aa-helper, not access for every VM.
 {bases}/ r,
 {bases}/** r,
 {vms}/ r,
 {vms}/** r,
 FORGE_AA
-chown root:root /etc/apparmor.d/local/forge-virt-aa-helper.new
-chmod 0644 /etc/apparmor.d/local/forge-virt-aa-helper.new
-mv -f /etc/apparmor.d/local/forge-virt-aa-helper.new /etc/apparmor.d/local/forge-virt-aa-helper
+chown root:root {profile_dir}/local/forge-virt-aa-helper.new
+chmod 0644 {profile_dir}/local/forge-virt-aa-helper.new
+mv -f {profile_dir}/local/forge-virt-aa-helper.new {profile_dir}/local/forge-virt-aa-helper
 touch "$local"
 if ! grep -Fx '#include if exists <local/forge-virt-aa-helper>' "$local" >/dev/null; then
   printf '\n#include if exists <local/forge-virt-aa-helper>\n' >> "$local"
 fi
 chown root:root "$local"
 chmod 0644 "$local"
-apparmor_parser -r "$profile"
+apparmor_parser -I {profile_dir} -r "$profile"
 "#
         ))
     }
