@@ -10,7 +10,7 @@ pub fn uri() -> Result<String> {
     if let Ok(from_env) = std::env::var("FORGE_LIBVIRT_URI") {
         if from_env.trim() != SYSTEM_URI {
             return Err(ForgeError::Host(format!(
-                "FORGE_LIBVIRT_URI={from_env} — Forge 4.0 uses only {SYSTEM_URI}"
+                "FORGE_LIBVIRT_URI={from_env} — Forge 4.2.0 uses only {SYSTEM_URI}"
             )));
         }
     }
@@ -157,34 +157,80 @@ pub fn ensure_vms_pool(uri: &str, path: &Path) -> Result<()> {
 }
 
 pub fn ensure_whonix_net(uri: &str) -> Result<()> {
-    match virsh(uri, &["net-info", WHONIX_NET]) {
-        Ok(_) => {
-            let xml = virsh(uri, &["net-dumpxml", WHONIX_NET])?;
-            let lower = xml.to_ascii_lowercase();
-            if lower.contains("mode='nat'")
-                || lower.contains("mode=\"nat\"")
-                || lower.contains("virbr0")
-            {
-                return Err(ForgeError::Role(format!(
-                    "{WHONIX_NET} must be forward=none, no NAT"
-                )));
+    let xml = format!(
+        "<network><name>{WHONIX_NET}</name><bridge name='virbr-forgewx' stp='off' delay='0'/></network>"
+    );
+    ensure_network(uri, WHONIX_NET, &xml, crate::network::private_ok)
+}
+
+pub fn ensure_standard_networks(uri: &str) -> Result<()> {
+    ensure_whonix_net(uri)?;
+    for name in [crate::network::STANDARD_NET, WAN_NET] {
+        ensure_network(uri, name, &crate::network::standard_nat_xml(name), |xml| {
+            crate::network::standard_nat_ok(xml, name)
+        })?;
+    }
+    Ok(())
+}
+
+fn ensure_network(
+    uri: &str,
+    name: &str,
+    desired: &str,
+    matches: impl Fn(&str) -> bool,
+) -> Result<()> {
+    let names = virsh(uri, &["net-list", "--all", "--name"])?;
+    let exists = names.lines().any(|n| n.trim() == name);
+    let mut desired = desired.to_owned();
+    let mut active = false;
+    if exists {
+        let live = virsh(uri, &["net-dumpxml", name])?;
+        let persistent = virsh(uri, &["net-dumpxml", name, "--inactive"])?;
+        let info = virsh(uri, &["net-info", name])?;
+        active = info.lines().any(|line| {
+            line.split_once(':')
+                .is_some_and(|(key, value)| key.trim() == "Active" && value.trim() == "yes")
+        });
+        if matches(&live) && matches(&persistent) {
+            if !active {
+                virsh(uri, &["net-start", name])?;
             }
-            let _ = virsh(uri, &["net-start", WHONIX_NET]);
-            Ok(())
+            virsh(uri, &["net-autostart", name])?;
+            return Ok(());
         }
-        Err(_) => {
-            let xml = format!(
-                "<network>\n  <name>{WHONIX_NET}</name>\n  <bridge name='virbr-forgewx' stp='off' delay='0'/>\n  <forward mode='none'/>\n</network>\n"
-            );
-            let tmp = tempfile_xml(&xml)?;
-            let result = virsh(uri, &["net-define", &tmp]);
-            let _ = fs::remove_file(&tmp);
-            result?;
-            virsh(uri, &["net-start", WHONIX_NET])?;
-            let _ = virsh(uri, &["net-autostart", WHONIX_NET]);
-            Ok(())
+        if !virsh(uri, &["list", "--name"])?.trim().is_empty() {
+            return Err(ForgeError::Role(format!(
+                "network {name} needs repair; stop all QEMU guests and run forge setup before changing it"
+            )));
+        }
+        if let Ok(doc) = roxmltree::Document::parse(&persistent) {
+            if let Some(uuid) = doc
+                .root_element()
+                .children()
+                .find(|n| n.has_tag_name("uuid"))
+                .and_then(|n| n.text())
+            {
+                desired = desired.replacen(
+                    "<network>",
+                    &format!("<network><uuid>{}</uuid>", crate::xml::escape(uuid)),
+                    1,
+                );
+            }
+        }
+        if active {
+            virsh(uri, &["net-destroy", name])?;
+            active = false;
         }
     }
+    let tmp = tempfile_xml(&desired)?;
+    let result = virsh(uri, &["net-define", &tmp]);
+    let _ = fs::remove_file(tmp);
+    result?;
+    if !active {
+        virsh(uri, &["net-start", name])?;
+    }
+    virsh(uri, &["net-autostart", name])?;
+    Ok(())
 }
 
 /// Gateway eth0. `egress` is the USB dongle's host interface. Without it the
@@ -227,20 +273,49 @@ fn wan_net_xml(egress: Option<&str>) -> String {
 }
 
 pub(crate) fn wan_xml_ok(xml: &str, egress: Option<&str>) -> bool {
-    let lower = xml.to_ascii_lowercase();
-    if !lower.contains("10.0.2.2") || !lower.contains("virbr-forgewan") {
+    let Ok(doc) = roxmltree::Document::parse(xml) else {
+        return false;
+    };
+    let root = doc.root_element();
+    let ips: Vec<_> = root.children().filter(|n| n.has_tag_name("ip")).collect();
+    if !root.has_tag_name("network")
+        || !root
+            .children()
+            .any(|n| n.has_tag_name("name") && n.text() == Some(WAN_NET))
+        || !root
+            .children()
+            .any(|n| n.has_tag_name("bridge") && n.attribute("name") == Some("virbr-forgewan"))
+        || ips.len() != 1
+        || ips[0].attribute("address") != Some("10.0.2.2")
+        || ips[0].attribute("netmask") != Some("255.255.255.0")
+        || root.children().any(|n| n.has_tag_name("route"))
+    {
         return false;
     }
-    if lower.contains("virbr0") {
-        return false;
-    }
+    let forward: Vec<_> = root
+        .children()
+        .filter(|n| n.has_tag_name("forward"))
+        .collect();
     match egress {
         Some(dev) => {
-            let needle = format!("dev='{}'", dev.to_ascii_lowercase());
-            let needle_dq = format!("dev=\"{}\"", dev.to_ascii_lowercase());
-            lower.contains("mode='nat'") && (lower.contains(&needle) || lower.contains(&needle_dq))
+            forward.len() == 1
+                && forward[0].attribute("mode") == Some("nat")
+                && forward[0].attribute("dev").is_none_or(|s| s == dev)
+                && {
+                    let interfaces: Vec<_> =
+                        forward[0].children().filter(|n| n.is_element()).collect();
+                    interfaces.len() == 1
+                        && interfaces[0].has_tag_name("interface")
+                        && interfaces[0].attribute("dev") == Some(dev)
+                }
         }
-        None => !lower.contains("mode='nat'") && !lower.contains("<interface"),
+        None => {
+            forward.is_empty()
+                || (forward.len() == 1
+                    && forward[0].attribute("mode") == Some("none")
+                    && forward[0].attribute("dev").is_none()
+                    && !forward[0].children().any(|n| n.is_element()))
+        }
     }
 }
 

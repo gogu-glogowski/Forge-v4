@@ -10,7 +10,7 @@ pub const SYSTEM_URI: &str = "qemu:///system";
 pub const FORGE_VMS_POOL: &str = "forge-vms";
 pub const WHONIX_NET: &str = "forge-whonix";
 /// Gateway eth0. Address 10.0.2.2 is what the Whonix image already expects.
-/// When dongle B is up, this network NATs only out that USB NIC, never cable A.
+/// Standard mode uses host NAT; dedicated mode pins NAT to USB B and stays isolated without B.
 pub const WAN_NET: &str = "forge-wan";
 
 /// Tsurugi LAB 26.03 — published short id 0x116AD57C is the encryption subkey.

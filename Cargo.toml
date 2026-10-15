@@ -4,7 +4,7 @@ default-members = ["crates/forge-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "4.2.0"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
@@ -26,7 +26,6 @@ unused_self = "allow"
 single_match_else = "allow"
 vec_init_then_push = "allow"
 case_sensitive_file_extension_comparisons = "allow"
-duration_suboptimal_units = "allow"
 collapsible_if = "allow"
 doc_markdown = "allow"
 map_unwrap_or = "allow"

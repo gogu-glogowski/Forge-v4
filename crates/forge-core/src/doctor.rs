@@ -4,8 +4,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
-use crate::cmd::{self, exists};
 use crate::error::Result;
+use crate::host::{Distribution, Host, OsRelease, SecurityState};
 use crate::profile::SYSTEM_URI;
 use crate::virt;
 use crate::xml;
@@ -40,28 +40,25 @@ impl DoctorReport {
     }
 }
 
-const DNF_VIRT: &str = "sudo dnf install @virtualization gnome-boxes virt-manager virt-viewer";
-const DNF_BUILD: &str = "sudo dnf install git gcc rust cargo libvirt-devel";
-
 pub fn run() -> Result<DoctorReport> {
-    let mut checks = Vec::new();
-    checks.push(os_check());
-    checks.push(bin_check("qemu-system-x86_64", "QEMU", Some(DNF_VIRT)));
-    checks.push(bin_check("qemu-img", "qemu-img", Some(DNF_VIRT)));
-    checks.push(bin_check("virsh", "libvirt virsh", Some(DNF_VIRT)));
+    let host = Host::discover();
+    let mut checks = host_checks(&host);
     checks.push(kvm_check());
     checks.push(group_check());
-    checks.push(selinux_check());
     checks.push(lab_storage_check());
-    checks.push(boxes_rpm_check());
     checks.push(boxes_system_source_check());
-    checks.push(virt_manager_check());
-    checks.push(bin_check("gpg", "GnuPG", Some("sudo dnf install gnupg2")));
-    checks.push(bin_check("curl", "curl", Some("sudo dnf install curl")));
-    checks.push(seven_zip_check());
-    checks.push(dongle_b_check());
-    checks.push(host_cables_check());
-    checks.push(libvirt_forward_check());
+    let network_mode = crate::network::Mode::load(&crate::paths::ForgePaths::discover())?;
+    checks.push(Check {
+        status: CheckStatus::Ok,
+        name: "network mode".to_owned(),
+        detail: network_mode.label().to_owned(),
+        fix: None,
+    });
+    if network_mode == crate::network::Mode::Dedicated {
+        checks.push(dongle_b_check());
+        checks.push(host_cables_check());
+    }
+    checks.push(libvirt_forward_check(network_mode));
     checks.push(qemu_hook_check());
 
     let system = virt::try_connect(SYSTEM_URI);
@@ -77,7 +74,10 @@ pub fn run() -> Result<DoctorReport> {
             name: "libvirt URI".to_owned(),
             detail: error.to_string(),
             fix: Some(format!(
-                "{DNF_VIRT}\nsudo systemctl enable --now libvirtd\nsudo usermod -aG libvirt \"$USER\"  # then log out"
+                "{}\nsudo usermod -aG libvirt \"$USER\"  # then log out",
+                host.libvirt_activation_hint().unwrap_or_else(|| {
+                    "Install the system libvirt daemon and inspect its systemd units".to_owned()
+                })
             )),
         }),
     }
@@ -94,19 +94,9 @@ pub fn run() -> Result<DoctorReport> {
     }
 
     if let Ok(uri) = &system {
-        checks.push(nat_on_forge_domains(uri));
+        checks.push(nat_on_forge_domains(uri, network_mode));
+        checks.extend(network_definitions(uri, network_mode));
     }
-
-    checks.push(Check {
-        status: CheckStatus::Ok,
-        name: "build deps".to_owned(),
-        detail: if exists("cargo") {
-            "cargo found".to_owned()
-        } else {
-            format!("cargo missing — {DNF_BUILD}")
-        },
-        fix: (!exists("cargo")).then(|| DNF_BUILD.to_owned()),
-    });
 
     let uri = system.ok();
     Ok(DoctorReport { uri, checks })
@@ -117,44 +107,230 @@ pub fn os_check() -> Check {
 }
 
 pub fn evaluate_os_release(os: &str) -> Check {
-    let id = value(os, "ID");
-    let version = value(os, "VERSION_ID");
-    let pretty = value(os, "PRETTY_NAME").unwrap_or_else(|| "unknown".to_owned());
-    let fedora = id.as_deref() == Some("fedora");
-    let major = version
-        .as_deref()
-        .and_then(|v| v.split('.').next())
-        .and_then(|v| v.parse::<u32>().ok());
-    if fedora && major.is_some_and(|n| n >= 44) {
-        Check {
-            status: CheckStatus::Ok,
-            name: "Host".to_owned(),
-            detail: pretty,
-            fix: None,
+    distribution_check(&OsRelease::parse(os))
+}
+
+fn distribution_check(os: &OsRelease) -> Check {
+    let (status, detail) = match os.distribution {
+        Distribution::Fedora if os.major_version().is_some_and(|n| n >= 44) => {
+            (CheckStatus::Ok, os.pretty_name.clone())
         }
-    } else if fedora {
-        Check {
-            status: CheckStatus::Fail,
-            name: "Host".to_owned(),
-            detail: format!("{pretty} — Forge 4.0 requires Fedora 44 or newer"),
-            fix: Some("Upgrade the host. doctor does not change the OS.".to_owned()),
-        }
-    } else {
-        Check {
-            status: CheckStatus::Fail,
-            name: "Host".to_owned(),
-            detail: format!("{pretty} — not Fedora"),
-            fix: Some("Forge 4.0 is Fedora-first.".to_owned()),
-        }
+        Distribution::Fedora => (
+            CheckStatus::Fail,
+            format!("{} — Forge requires Fedora 44 or newer", os.pretty_name),
+        ),
+        Distribution::Debian | Distribution::Ubuntu | Distribution::Pop => (
+            CheckStatus::Ok,
+            format!(
+                "{} — recognized port target; runtime support checked separately",
+                os.pretty_name
+            ),
+        ),
+        Distribution::Unknown => (
+            CheckStatus::Fail,
+            format!(
+                "{} — unrecognized distribution (ID={}, ID_LIKE={})",
+                os.pretty_name,
+                os.id,
+                os.id_like.join(" ")
+            ),
+        ),
+    };
+    Check {
+        status,
+        name: "Host".to_owned(),
+        detail,
+        fix: (status == CheckStatus::Fail).then(|| {
+            "Use Fedora 44+ or a recognized Debian, Ubuntu or Pop!_OS port target.".to_owned()
+        }),
     }
 }
 
-fn value(os: &str, key: &str) -> Option<String> {
-    os.lines().find_map(|line| {
-        let line = line.trim();
-        line.strip_prefix(&format!("{key}="))
-            .map(|v| v.trim().trim_matches('"').trim_matches('\'').to_owned())
-    })
+/// Pure evaluation of a snapshot; all host access lives in host::Host::discover.
+fn host_checks(host: &Host) -> Vec<Check> {
+    let mut checks = vec![distribution_check(&host.os)];
+    checks.push(Check {
+        status: if host.architecture == "x86_64" {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Fail
+        },
+        name: "architecture".to_owned(),
+        detail: host.architecture.clone(),
+        fix: (host.architecture != "x86_64")
+            .then(|| "Forge guests require an x86_64 host.".to_owned()),
+    });
+    checks.push(Check {
+        status: if host.systemd {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Fail
+        },
+        name: "systemd".to_owned(),
+        detail: if host.systemd {
+            "running"
+        } else {
+            "not detected as host service manager"
+        }
+        .to_owned(),
+        fix: None,
+    });
+    checks.push(Check {
+        status: if host.desktop_session.is_some() {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Warn
+        },
+        name: "desktop session".to_owned(),
+        detail: host.desktop_session.clone().unwrap_or_else(|| {
+            "no graphical session detected in this process; GNOME Boxes needs a desktop session"
+                .to_owned()
+        }),
+        fix: None,
+    });
+    let nm_active = host
+        .service("NetworkManager.service")
+        .is_some_and(crate::host::Service::active);
+    checks.push(Check {
+        status: if nm_active { CheckStatus::Ok } else { CheckStatus::Fail },
+        name: "NetworkManager service".to_owned(), detail: if nm_active { "active" } else { "not active or cannot be inspected; this port requires NetworkManager" }.to_owned(),
+        fix: (!nm_active).then(|| "Inspect systemctl status NetworkManager.service; configure the desktop to use NetworkManager.".to_owned()),
+    });
+    let daemon_units: Vec<_> = host
+        .services
+        .iter()
+        .filter(|s| s.unit != "NetworkManager.service" && s.available())
+        .collect();
+    let daemon_active = daemon_units.iter().any(|s| {
+        s.active()
+            && matches!(
+                s.unit.as_str(),
+                "libvirtd.service" | "libvirtd.socket" | "virtqemud.service" | "virtqemud.socket"
+            )
+    });
+    checks.push(Check {
+        status: if daemon_active {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Fail
+        },
+        name: "libvirt services".to_owned(),
+        detail: if daemon_units.is_empty() {
+            "no loaded libvirt units detected".to_owned()
+        } else {
+            daemon_units
+                .iter()
+                .map(|s| format!("{}={}", s.unit, s.active_state))
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+        fix: if daemon_active {
+            None
+        } else {
+            host.libvirt_activation_hint()
+        },
+    });
+    checks.push(Check {
+        status: if host.qemu.configured { CheckStatus::Ok } else { CheckStatus::Warn },
+        name: "QEMU identity".to_owned(),
+        detail: format!("user={}, group={} ({})", host.qemu.user.as_deref().unwrap_or("unknown"), host.qemu.group.as_deref().unwrap_or("unknown"),
+            if host.qemu.configured { "explicit qemu.conf values resolved through getent" } else { "unconfirmed candidates; not used for permissions" }),
+        fix: (!host.qemu.configured).then(|| "Confirm the effective QEMU identity before configuring disk ownership; distribution defaults are not proof.".to_owned()),
+    });
+    checks.push(Check {
+        status: if host.native_boxes { CheckStatus::Ok } else { CheckStatus::Fail },
+        name: "native Boxes package".to_owned(),
+        detail: if host.native_boxes { "system package installed; use qemu:///system" } else { "native gnome-boxes package not confirmed; Flatpak alone is insufficient for this workflow" }.to_owned(),
+        fix: if host.native_boxes { None } else { crate::host::DEPENDENCIES.iter().find(|d| d.name == "GNOME Boxes").and_then(|d| host.os.install_hint(*d)) },
+    });
+    checks.extend(security_checks(host));
+    for tool in &host.tools {
+        checks.push(Check {
+            status: if tool.executable.is_some() {
+                CheckStatus::Ok
+            } else if tool.dependency.required {
+                CheckStatus::Fail
+            } else {
+                CheckStatus::Warn
+            },
+            name: tool.dependency.name.to_owned(),
+            detail: tool.executable.as_ref().map_or_else(
+                || format!("{} not found", tool.dependency.alternatives.join("/")),
+                |bin| format!("{bin} found"),
+            ),
+            fix: if tool.executable.is_some() {
+                None
+            } else {
+                host.os.install_hint(tool.dependency)
+            },
+        });
+    }
+    if matches!(
+        host.os.distribution,
+        Distribution::Debian | Distribution::Ubuntu | Distribution::Pop
+    ) {
+        checks.push(Check {
+            status: if host.os.distribution == Distribution::Pop && host.os.version == "24.04" {
+                CheckStatus::Warn
+            } else {
+                CheckStatus::Fail
+            }, name: "port readiness".to_owned(),
+            detail: "Standard mode was exercised on Pop!_OS 24.04 with AppArmor, Boxes and Whonix; firewall integration across distributions and dedicated A/B hardware validation remain pending.".to_owned(),
+            fix: None,
+        });
+    }
+    checks
+}
+
+fn security_checks(host: &Host) -> Vec<Check> {
+    let selinux_ok = host.security.selinux == SecurityState::Enforcing;
+    let fedora = host.os.distribution == Distribution::Fedora;
+    vec![
+        Check {
+            status: if selinux_ok {
+                CheckStatus::Ok
+            } else if fedora {
+                CheckStatus::Fail
+            } else {
+                CheckStatus::Warn
+            },
+            name: "SELinux".to_owned(),
+            detail: format!("{:?}", host.security.selinux),
+            fix: (fedora && !selinux_ok).then(|| {
+                "Fedora requires verified SELinux enforcing mode; inspect getenforce.".to_owned()
+            }),
+        },
+        Check {
+            status: CheckStatus::Warn,
+            name: "AppArmor".to_owned(),
+            detail: format!(
+                "{:?} (kernel state; per-VM profile enforcement is not verified)",
+                host.security.apparmor
+            ),
+            fix: None,
+        },
+        Check {
+            status: if host.security.advertised_models.is_empty() {
+                CheckStatus::Warn
+            } else {
+                CheckStatus::Ok
+            },
+            name: "libvirt security driver".to_owned(),
+            detail: format!(
+                "configured: {}; libvirt advertises: {} (per-VM enforcement not verified)",
+                host.security
+                    .libvirt_drivers
+                    .as_deref()
+                    .unwrap_or("default or unreadable"),
+                if host.security.advertised_models.is_empty() {
+                    "unknown".to_owned()
+                } else {
+                    host.security.advertised_models.join(", ")
+                }
+            ),
+            fix: None,
+        },
+    ]
 }
 
 fn kvm_check() -> Check {
@@ -237,46 +413,6 @@ fn qemu_hook_check() -> Check {
     }
 }
 
-fn selinux_check() -> Check {
-    let output = Command::new("getenforce").output().ok();
-    let mode = output
-        .as_ref()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .unwrap_or_else(|| "unknown".to_owned());
-    if mode.eq_ignore_ascii_case("disabled") {
-        Check {
-            status: CheckStatus::Fail,
-            name: "SELinux".to_owned(),
-            detail: "Disabled — Forge will not run on a host with SELinux off".to_owned(),
-            fix: Some("Re-enable SELinux. Do not turn it off for Forge.".to_owned()),
-        }
-    } else {
-        Check {
-            status: CheckStatus::Ok,
-            name: "SELinux".to_owned(),
-            detail: mode,
-            fix: None,
-        }
-    }
-}
-
-fn boxes_rpm_check() -> Check {
-    match cmd::run_checked("rpm", &["-q", "gnome-boxes"]) {
-        Ok(pkg) => Check {
-            status: CheckStatus::Ok,
-            name: "GNOME Boxes".to_owned(),
-            detail: format!("{pkg} (daily GUI; point at qemu:///system, do not New-VM)"),
-            fix: None,
-        },
-        Err(_) => Check {
-            status: CheckStatus::Fail,
-            name: "GNOME Boxes".to_owned(),
-            detail: "rpm gnome-boxes missing (Flatpak does not see system domains)".to_owned(),
-            fix: Some("sudo dnf install gnome-boxes".to_owned()),
-        },
-    }
-}
-
 fn boxes_system_source_check() -> Check {
     let path = crate::boxes::source_path();
     let text = fs::read_to_string(&path).unwrap_or_default();
@@ -304,25 +440,7 @@ fn boxes_system_source_check() -> Check {
     }
 }
 
-fn virt_manager_check() -> Check {
-    if exists("virt-manager") {
-        Check {
-            status: CheckStatus::Ok,
-            name: "virt-manager".to_owned(),
-            detail: "present (spare: XML, USB dongle B)".to_owned(),
-            fix: None,
-        }
-    } else {
-        Check {
-            status: CheckStatus::Warn,
-            name: "virt-manager".to_owned(),
-            detail: "missing — daily work uses Boxes; install for XML/USB spare".to_owned(),
-            fix: Some("sudo dnf install virt-manager virt-viewer".to_owned()),
-        }
-    }
-}
-
-fn libvirt_forward_check() -> Check {
+fn libvirt_forward_check(mode: crate::network::Mode) -> Check {
     match crate::hostnet::libvirt_forwards() {
         Some(true) => Check {
             status: CheckStatus::Ok,
@@ -334,7 +452,14 @@ fn libvirt_forward_check() -> Check {
             status: CheckStatus::Warn,
             name: "libvirt forward".to_owned(),
             detail: "firewalld zone libvirt drops forwarded packets".to_owned(),
-            fix: Some("forge start whonix-gateway".to_owned()),
+            fix: Some(
+                if mode == crate::network::Mode::Standard {
+                    "forge setup"
+                } else {
+                    "forge start whonix-gateway"
+                }
+                .to_owned(),
+            ),
         },
         None => Check {
             status: CheckStatus::Ok,
@@ -357,7 +482,7 @@ fn host_cables_check() -> Check {
             status: CheckStatus::Fail,
             name: "host cables".to_owned(),
             detail: format!(
-                "dongle B is Fedora's default route ({})",
+                "dongle B is the host's default route ({})",
                 audit.usb_defaults.join(", ")
             ),
             fix: Some("forge dev cables".to_owned()),
@@ -366,7 +491,7 @@ fn host_cables_check() -> Check {
             status: CheckStatus::Warn,
             name: "host cables".to_owned(),
             detail: format!(
-                "dongle B has an address ({}) so the gateway can reach the router. Fedora's default route stays on cable A.",
+                "dongle B has an address ({}) so the gateway can reach the router. The host's default route stays on cable A.",
                 audit.held.join(", ")
             ),
             fix: None,
@@ -451,7 +576,9 @@ fn lab_storage_check() -> Check {
             fix: None,
         };
     }
-    let vms_ok = crate::paths::dir_writable(&paths.vms);
+    let dirs_ok = crate::security::storage_directories_protected(&paths);
+    let vms_ok = dirs_ok && crate::paths::dir_writable(&paths.vms);
+    let unprotected: Vec<_> = crate::pull::unprotected_bases(&paths).collect();
     let mut unread = Vec::new();
     if let Ok(entries) = fs::read_dir(&paths.bases) {
         for entry in entries.flatten() {
@@ -468,7 +595,7 @@ fn lab_storage_check() -> Check {
         }
     }
     let selinux_wrong = bases_wrong_selinux(&paths);
-    if vms_ok && unread.is_empty() && !selinux_wrong {
+    if vms_ok && unread.is_empty() && unprotected.is_empty() && !selinux_wrong {
         return Check {
             status: CheckStatus::Ok,
             name: "lab storage".to_owned(),
@@ -483,9 +610,12 @@ fn lab_storage_check() -> Check {
     if !vms_ok {
         detail.push(format!("{} missing or not writable", paths.vms.display()));
     }
+    if !unprotected.is_empty() {
+        detail.push("bases must be root:root, mode 0444, immutable and not symlinks".to_owned());
+    }
     if !unread.is_empty() {
         detail.push(format!(
-            "unreadable bases (need 0444, not 0440 root:qemu): {}",
+            "unreadable bases (need root:root mode 0444): {}",
             unread.join(", ")
         ));
     }
@@ -526,48 +656,13 @@ fn bases_wrong_selinux(paths: &crate::paths::ForgePaths) -> bool {
     false
 }
 
-fn seven_zip_check() -> Check {
-    match cmd::first_existing(&["7z", "7zz", "7za"]) {
-        Some(bin) => Check {
-            status: CheckStatus::Ok,
-            name: "7z".to_owned(),
-            detail: format!("{bin} found (Kali *.7z extract)"),
-            fix: None,
-        },
-        None => Check {
-            status: CheckStatus::Fail,
-            name: "7z".to_owned(),
-            detail: "7z/7zz/7za not found — needed for forge pull kali".to_owned(),
-            fix: Some("sudo dnf install 7zip".to_owned()),
-        },
-    }
-}
-
-fn bin_check(bin: &str, name: &str, fix: Option<&str>) -> Check {
-    if exists(bin) {
-        Check {
-            status: CheckStatus::Ok,
-            name: name.to_owned(),
-            detail: format!("{bin} found"),
-            fix: None,
-        }
-    } else {
-        Check {
-            status: CheckStatus::Fail,
-            name: name.to_owned(),
-            detail: format!("{bin} not found"),
-            fix: fix.map(ToOwned::to_owned),
-        }
-    }
-}
-
-fn nat_on_forge_domains(uri: &str) -> Check {
+fn nat_on_forge_domains(uri: &str, mode: crate::network::Mode) -> Check {
     let names = match virt::list_all_names(uri) {
         Ok(n) => n,
         Err(error) => {
             return Check {
                 status: CheckStatus::Warn,
-                name: "Forge NAT".to_owned(),
+                name: "Forge network roles".to_owned(),
                 detail: format!("cannot list domains: {error}"),
                 fix: None,
             };
@@ -582,25 +677,78 @@ fn nat_on_forge_domains(uri: &str) -> Check {
             continue;
         }
         let facts = xml::inspect(&xml);
-        if facts.has_default_network || facts.has_user_net || facts.has_passt || facts.has_virbr0 {
+        let role = facts
+            .forge_role
+            .as_deref()
+            .and_then(crate::role::Role::parse);
+        if role.is_none_or(|role| crate::network::check_domain(&xml, role, mode).is_err()) {
             bad.push(name);
         }
     }
     if bad.is_empty() {
         Check {
             status: CheckStatus::Ok,
-            name: "Forge NAT".to_owned(),
-            detail: "no default/user/passt/virbr0 on Forge domains".to_owned(),
+            name: "Forge network roles".to_owned(),
+            detail: format!("Forge domains match {mode} network policy"),
             fix: None,
         }
     } else {
         Check {
             status: CheckStatus::Fail,
-            name: "Forge NAT".to_owned(),
-            detail: format!("NAT leaked on: {}", bad.join(", ")),
-            fix: Some("forge status; fix XML or recreate. Forge does not NAT guests.".to_owned()),
+            name: "Forge network roles".to_owned(),
+            detail: format!("network policy mismatch on: {}", bad.join(", ")),
+            fix: Some(
+                "Stop all guests and run forge setup to regenerate the selected mode.".to_owned(),
+            ),
         }
     }
+}
+
+fn network_definitions(uri: &str, mode: crate::network::Mode) -> Vec<Check> {
+    let names: &[&str] = if mode == crate::network::Mode::Standard {
+        &[
+            crate::network::STANDARD_NET,
+            crate::profile::WAN_NET,
+            crate::profile::WHONIX_NET,
+        ]
+    } else {
+        &[crate::profile::WHONIX_NET]
+    };
+    let mut checks: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let valid = crate::virt::virsh(uri, &["net-dumpxml", name]).is_ok_and(|xml| {
+                if *name == crate::profile::WHONIX_NET {
+                    crate::network::private_ok(&xml)
+                } else {
+                    crate::network::standard_nat_ok(&xml, name)
+                }
+            });
+            Check {
+                status: if valid {
+                    CheckStatus::Ok
+                } else {
+                    CheckStatus::Fail
+                },
+                name: format!("network {name}"),
+                detail: if valid {
+                    "matches selected network policy"
+                } else {
+                    "missing or differs from selected network policy"
+                }
+                .to_owned(),
+                fix: (!valid)
+                    .then(|| format!("Stop all guests, then forge setup --network {mode}")),
+            }
+        })
+        .collect();
+    if fs::read_to_string("/etc/ufw/ufw.conf")
+        .is_ok_and(|text| text.lines().any(|line| line.trim() == "ENABLED=yes"))
+    {
+        checks.push(Check { status: CheckStatus::Warn, name: "UFW forwarding".to_owned(),
+            detail: "UFW is enabled; guest forwarding still needs verification. Forge does not disable UFW or change its global defaults.".to_owned(), fix: None });
+    }
+    checks
 }
 
 #[must_use]
@@ -627,7 +775,7 @@ pub fn format_report(report: &DoctorReport) -> String {
         out.push_str("\nHost is ready for Forge.\n");
     } else {
         out.push_str(
-            "\nHost is not ready. Doctor does not change the host. `forge dev cables` takes dongle B off Fedora.\n",
+            "\nHost is not ready. Doctor does not change the host. Run forge setup to prepare the selected network mode.\n",
         );
     }
     out
@@ -654,6 +802,122 @@ mod tests {
     fn arch_is_fail() {
         let os = "ID=arch\nPRETTY_NAME=\"Arch Linux\"\n";
         assert_eq!(evaluate_os_release(os).status, CheckStatus::Fail);
+    }
+
+    fn snapshot(release: &str) -> Host {
+        Host {
+            os: OsRelease::parse(release),
+            architecture: "x86_64".to_owned(),
+            systemd: true,
+            desktop_session: Some("wayland".to_owned()),
+            native_boxes: true,
+            services: vec![
+                crate::host::Service {
+                    unit: "NetworkManager.service".to_owned(),
+                    load_state: "loaded".to_owned(),
+                    active_state: "active".to_owned(),
+                },
+                crate::host::Service {
+                    unit: "libvirtd.service".to_owned(),
+                    load_state: "loaded".to_owned(),
+                    active_state: "active".to_owned(),
+                },
+            ],
+            security: crate::host::Security {
+                selinux: SecurityState::Enforcing,
+                apparmor: SecurityState::Unknown,
+                libvirt_drivers: None,
+                advertised_models: vec!["selinux".to_owned()],
+            },
+            qemu: crate::host::QemuIdentity {
+                user: Some("qemu".to_owned()),
+                group: Some("qemu".to_owned()),
+                configured: true,
+            },
+            tools: crate::host::DEPENDENCIES
+                .iter()
+                .map(|dependency| crate::host::Tool {
+                    dependency: *dependency,
+                    executable: Some(dependency.alternatives[0].to_owned()),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn port_targets_are_recognized_but_not_falsely_ready() {
+        for id in ["debian", "ubuntu", "pop"] {
+            let host = snapshot(&format!("ID={id}\nVERSION_ID=24.04"));
+            let checks = host_checks(&host);
+            assert_eq!(checks[0].status, CheckStatus::Ok);
+            let report = DoctorReport { uri: None, checks };
+            let readiness = report
+                .checks
+                .iter()
+                .find(|check| check.name == "port readiness")
+                .unwrap();
+            assert_eq!(
+                readiness.status,
+                if id == "pop" {
+                    CheckStatus::Warn
+                } else {
+                    CheckStatus::Fail
+                }
+            );
+            assert_eq!(report.ok(), id == "pop");
+            assert!(format_report(&report).contains("firewall integration"));
+        }
+    }
+
+    #[test]
+    fn unsupported_architecture_and_missing_services_fail() {
+        let mut host = snapshot("ID=fedora\nVERSION_ID=44");
+        host.architecture = "aarch64".to_owned();
+        host.systemd = false;
+        host.services.clear();
+        let checks = host_checks(&host);
+        for name in [
+            "architecture",
+            "systemd",
+            "NetworkManager service",
+            "libvirt services",
+        ] {
+            assert_eq!(
+                checks.iter().find(|c| c.name == name).unwrap().status,
+                CheckStatus::Fail
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_or_permissive_selinux_does_not_pass_fedora() {
+        let mut host = snapshot("ID=fedora\nVERSION_ID=44");
+        for state in [
+            SecurityState::Unknown,
+            SecurityState::Disabled,
+            SecurityState::Permissive,
+        ] {
+            host.security.selinux = state;
+            assert_eq!(security_checks(&host)[0].status, CheckStatus::Fail);
+        }
+        host.security.selinux = SecurityState::Enforcing;
+        assert_eq!(security_checks(&host)[0].status, CheckStatus::Ok);
+    }
+
+    #[test]
+    fn missing_tools_have_apt_hints_without_fedora_commands() {
+        let mut host = snapshot("ID=ubuntu\nVERSION_ID=24.04");
+        for tool in &mut host.tools {
+            tool.executable = None;
+        }
+        let text = format_report(&DoctorReport {
+            uri: None,
+            checks: host_checks(&host),
+        });
+        assert!(text.contains("sudo apt install qemu-utils"));
+        assert!(text.contains("sudo apt install network-manager"));
+        assert!(!text.contains("dnf"));
+        assert!(!text.contains("rpm"));
     }
 
     #[test]

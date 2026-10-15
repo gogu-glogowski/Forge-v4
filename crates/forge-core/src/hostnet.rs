@@ -1051,7 +1051,7 @@ default via 192.168.50.1 dev enp10s0 proto dhcp metric 101
             addressed: BTreeSet::from(["enp10s0".to_owned(), "enp2s0".to_owned()]),
         };
         assert_eq!(snap.usb_held().len(), 1);
-        assert!(snap.foreign_defaults().is_empty());
+        assert_eq!(snap.foreign_defaults(), Vec::<String>::new());
         let text = render(&snap);
         assert!(text.contains("enp2s0"));
         assert!(text.contains("default"));

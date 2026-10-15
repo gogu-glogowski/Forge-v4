@@ -26,3 +26,6 @@ debug
 *.tar.xz
 *.pem
 *.key
+
+/dist/
+__pycache__/

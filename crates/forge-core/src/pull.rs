@@ -28,7 +28,7 @@ pub fn pull(paths: &ForgePaths, profile: Profile, progress: &Progress) -> Result
             Profile::Sift => pull_sift(paths, progress),
         }
     };
-    if paths.privileged_bases {
+    if paths.privileged_bases && !cmd::has_priv_session() {
         progress::message(
             progress,
             "sudo: type your password NOW. A root helper stays up until this pull finishes — no password at the end (not sudo forge).",
@@ -257,10 +257,18 @@ fn collect_whonix_qcow2(
 }
 
 fn pull_sift(paths: &ForgePaths, progress: &Progress) -> Result<PathBuf> {
+    pull_sift_from(paths, None, progress)
+}
+
+pub(crate) fn pull_sift_from(
+    paths: &ForgePaths,
+    source: Option<&Path>,
+    progress: &Progress,
+) -> Result<PathBuf> {
     let dir = paths.cache_dir(Profile::Sift);
     fs::create_dir_all(&dir)?;
     let expected = sift_expected_sha256(paths, progress)?;
-    let source = find_sift_ova(&dir)?;
+    let source = source.map_or_else(|| find_sift_ova(&dir), |p| Ok(p.display().to_string()))?;
     progress::message(progress, format!("Using SIFT OVA {source}"));
     let dest = dir.join(
         Path::new(&source)
@@ -503,21 +511,29 @@ pub fn install_base(
 fn install_immutable(paths: &ForgePaths, src: &Path, dest: &Path) -> Result<()> {
     ensure_lab_storage(paths)?;
     if paths.privileged_bases {
+        let policy = crate::security::Policy::for_paths(paths)?;
+        let label = if policy == crate::security::Policy::Selinux {
+            "restorecon -F"
+        } else {
+            ":"
+        };
         let dest_s = sh_quote(dest)?;
         let src_s = sh_quote(src)?;
         let exists = dest.exists();
         let unlock = if exists {
-            format!("chattr -i {dest_s} 2>/dev/null || true\n")
+            format!("chattr -i {dest_s}\n")
         } else {
             String::new()
         };
         // One job on the live helper — no new sudo, no password at the end.
         let script = format!(
-            "{unlock}\
-             install -o root -g qemu -m 0444 {src_s} {dest_s}\n\
-             restorecon -F {dest_s} 2>/dev/null || true\n\
-             chcon -t virt_content_t {dest_s} 2>/dev/null || true\n\
-             chattr +i {dest_s}\n"
+            "set -eu\nbase={dest_s}\n\
+             [ ! -L {dest_s} ]\n\
+             trap 'if [ -f \"$base\" ]; then chattr +i \"$base\"; fi' EXIT\n\
+             {unlock}\
+             install -o root -g root -m 0444 {src_s} {dest_s}\n\
+             {label} {dest_s}\n\
+             chattr +i {dest_s}\ntrap - EXIT\n"
         );
         cmd::priv_script(&script)?;
     } else {
@@ -563,16 +579,30 @@ pub fn needs_privileged_prepare(paths: &ForgePaths) -> bool {
     if !paths.privileged_bases {
         return false;
     }
-    if !crate::paths::dir_writable(&paths.vms) {
+    if !crate::security::storage_directories_protected(paths)
+        || !crate::paths::dir_writable(&paths.vms)
+    {
         return true;
     }
     if !paths.bases.is_dir() {
         return true;
     }
-    if unreadable_bases(paths).next().is_some() {
+    if unreadable_bases(paths).next().is_some() || unprotected_bases(paths).next().is_some() {
         return true;
     }
     bases_need_virt_content(paths)
+}
+
+pub(crate) fn unprotected_bases(paths: &ForgePaths) -> impl Iterator<Item = PathBuf> {
+    fs::read_dir(&paths.bases)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().is_some_and(|ext| ext == "qcow2")
+                && !crate::security::base_is_protected(path)
+        })
 }
 
 fn bases_need_virt_content(paths: &ForgePaths) -> bool {
@@ -607,42 +637,58 @@ fn unreadable_bases(paths: &ForgePaths) -> impl Iterator<Item = PathBuf> {
 }
 
 pub(crate) fn privileged_prepare_script(paths: &ForgePaths) -> Result<String> {
+    privileged_prepare_script_for(paths, crate::security::Policy::for_paths(paths)?)
+}
+
+fn privileged_prepare_script_for(
+    paths: &ForgePaths,
+    policy: crate::security::Policy,
+) -> Result<String> {
+    crate::security::validate_paths(paths)?;
     let root = sh_quote(&paths.root)?;
     let bases = sh_quote(&paths.bases)?;
     let vms = sh_quote(&paths.vms)?;
-    let bases_fc = format!("{}(/.*)?", path(&paths.bases)?);
-    let vms_fc = format!("{}(/.*)?", path(&paths.vms)?);
-    if bases_fc.contains('\'') || vms_fc.contains('\'') {
-        return Err(ForgeError::Host(
-            "lab path must not contain quotes".to_owned(),
-        ));
-    }
+    let label_setup = if policy == crate::security::Policy::Selinux {
+        let base_regex = format!("{}(/.*)?", path(&paths.bases)?.replace('.', "\\."));
+        let vm_regex = format!("{}(/.*)?", path(&paths.vms)?.replace('.', "\\."));
+        format!(
+            "command -v semanage >/dev/null\ncommand -v restorecon >/dev/null\nsemanage fcontext -a -t virt_content_t '{base_regex}' 2>/dev/null || semanage fcontext -m -t virt_content_t '{base_regex}'\nsemanage fcontext -a -t virt_image_t '{vm_regex}' 2>/dev/null || semanage fcontext -m -t virt_image_t '{vm_regex}'\nrestorecon -F {root} {bases} {vms}\n"
+        )
+    } else {
+        String::new()
+    };
+    let base_label = if policy == crate::security::Policy::Selinux {
+        "restorecon -F \"$f\""
+    } else {
+        ":"
+    };
+    let overlay_label = if policy == crate::security::Policy::Selinux {
+        format!("restorecon -RF {vms}\n")
+    } else {
+        String::new()
+    };
     Ok(format!(
-        "set -e\n\
+        "set -eu\n\
+         [ ! -L {root} ] && [ ! -L {bases} ] && [ ! -L {vms} ]\n\
+         getent group libvirt >/dev/null\n\
          mkdir -p {bases} {vms}\n\
          chown root:root {root} {bases}\n\
          chmod 0755 {root} {bases}\n\
-         if getent group libvirt >/dev/null; then\n\
-           chown root:libvirt {vms}\n\
-           chmod 2771 {vms}\n\
-         else\n\
-           chmod 1771 {vms}\n\
-         fi\n\
-         if command -v semanage >/dev/null 2>&1; then\n\
-           semanage fcontext -a -t virt_content_t '{bases_fc}' 2>/dev/null || \
-           semanage fcontext -m -t virt_content_t '{bases_fc}' 2>/dev/null || true\n\
-           semanage fcontext -a -t virt_image_t '{vms_fc}' 2>/dev/null || \
-           semanage fcontext -m -t virt_image_t '{vms_fc}' 2>/dev/null || true\n\
-         fi\n\
+         chown root:libvirt {vms}\n\
+         chmod 2771 {vms}\n\
+         {label_setup}\
          for f in {bases}/*.qcow2; do\n\
            [ -e \"$f\" ] || continue\n\
-           chattr -i \"$f\" 2>/dev/null || true\n\
-           if getent group qemu >/dev/null; then chown root:qemu \"$f\"; fi\n\
+           [ ! -L \"$f\" ] && [ -f \"$f\" ]\n\
+           trap 'chattr +i \"$f\"' EXIT\n\
+           chattr -i \"$f\"\n\
+           chown root:root \"$f\"\n\
            chmod 0444 \"$f\"\n\
-           restorecon -F \"$f\" 2>/dev/null || chcon -t virt_content_t \"$f\" 2>/dev/null || true\n\
+           {base_label}\n\
            chattr +i \"$f\"\n\
+           trap - EXIT\n\
          done\n\
-         restorecon -RF {vms} >/dev/null 2>&1 || true\n"
+         {overlay_label}"
     ))
 }
 
@@ -785,7 +831,8 @@ mod tests {
     #[test]
     fn privileged_script_prepares_vms_and_readable_bases() {
         let paths = ForgePaths::under(PathBuf::from("/var/lib/forge"), true);
-        let script = privileged_prepare_script(&paths).unwrap();
+        let script =
+            privileged_prepare_script_for(&paths, crate::security::Policy::Selinux).unwrap();
         assert!(script.contains("mkdir -p '/var/lib/forge/bases' '/var/lib/forge/vms'"));
         assert!(script.contains("chmod 2771"));
         assert!(script.contains("chmod 0444"));
@@ -798,6 +845,31 @@ mod tests {
     }
 
     #[test]
+    fn storage_scripts_have_valid_shell_and_no_selinux_commands_on_apparmor() {
+        let paths = ForgePaths::under(PathBuf::from("/var/lib/forge"), true);
+        for policy in [
+            crate::security::Policy::Apparmor,
+            crate::security::Policy::Selinux,
+        ] {
+            let script = privileged_prepare_script_for(&paths, policy).unwrap();
+            assert!(
+                std::process::Command::new("sh")
+                    .args(["-n", "-c", &script])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(!script.contains("root:qemu"));
+            assert!(!script.contains("1771"));
+            if policy == crate::security::Policy::Apparmor {
+                assert!(!script.contains("restorecon"));
+                assert!(!script.contains("semanage"));
+                assert!(!script.contains("virt_content_t"));
+            }
+        }
+    }
+
+    #[test]
     fn needs_prepare_when_overlay_dir_missing_or_base_unreadable() {
         let dir = std::env::temp_dir().join(format!("forge-prep-{}", uuid::Uuid::new_v4()));
         let paths = ForgePaths::under(dir.clone(), true);
@@ -807,8 +879,8 @@ mod tests {
         let dummy = paths.named_base("kali");
         fs::write(&dummy, b"qcow").unwrap();
         assert!(
-            !needs_privileged_prepare(&paths),
-            "writable vms + readable base"
+            needs_privileged_prepare(&paths),
+            "readability alone is insufficient: storage must be root-owned and bases immutable"
         );
         let mut perms = fs::metadata(&dummy).unwrap().permissions();
         use std::os::unix::fs::PermissionsExt;

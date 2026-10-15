@@ -1,4 +1,5 @@
-use crate::error::{ForgeError, Result};
+#[cfg(test)]
+use crate::error::Result;
 use crate::profile::{METADATA_NS, WAN_NET, WHONIX_NET};
 use crate::role::Role;
 
@@ -26,7 +27,21 @@ pub struct DomainSpec<'a> {
 }
 
 #[must_use]
+#[cfg(test)]
 pub fn domain_xml(spec: &DomainSpec<'_>) -> String {
+    domain_xml_for(spec, crate::security::Policy::Selinux)
+}
+
+#[cfg(test)]
+pub fn domain_xml_for(spec: &DomainSpec<'_>, policy: crate::security::Policy) -> String {
+    domain_xml_with(spec, policy, crate::network::Mode::Dedicated)
+}
+
+pub fn domain_xml_with(
+    spec: &DomainSpec<'_>,
+    policy: crate::security::Policy,
+    mode: crate::network::Mode,
+) -> String {
     let name = escape(spec.name);
     let uuid = escape(spec.uuid);
     let overlay = escape(spec.overlay);
@@ -34,14 +49,29 @@ pub fn domain_xml(spec: &DomainSpec<'_>) -> String {
     let profile = escape(spec.profile);
     let digest = escape(spec.base_digest);
     let role = spec.role.id();
-    let nets = network_xml(spec.role);
+    let nets = if mode == crate::network::Mode::Standard && spec.role == Role::OsintClearnet {
+        format!(
+            "    <interface type='network'><source network='{}'/><model type='virtio'/></interface>\n",
+            crate::network::STANDARD_NET
+        )
+    } else {
+        network_xml(spec.role)
+    };
+    let model = policy.model();
+    let base_security = if policy == crate::security::Policy::Selinux {
+        "          <seclabel model='dac' relabel='no'/>\n          <seclabel model='selinux' relabel='no'/>"
+    } else {
+        "          <seclabel model='dac' relabel='no'/>"
+    };
     format!(
         "\
 <domain type='kvm'>
+  <seclabel type='dynamic' model='{model}' relabel='yes'/>
   <name>{name}</name>
   <uuid>{uuid}</uuid>
   <metadata>
     <forge:forge xmlns:forge='{METADATA_NS}'>
+      <forge:network-mode>{mode}</forge:network-mode>
       <forge:profile>{profile}</forge:profile>
       <forge:role>{role}</forge:role>
       <forge:base-digest>{digest}</forge:base-digest>
@@ -71,7 +101,7 @@ pub fn domain_xml(spec: &DomainSpec<'_>) -> String {
       <backingStore type='file'>
         <format type='qcow2'/>
         <source file='{base}'>
-          <seclabel model='selinux' relabel='no'/>
+{base_security}
         </source>
         <backingStore/>
       </backingStore>
@@ -135,16 +165,9 @@ fn network_xml(role: Role) -> String {
 
 #[derive(Debug, Clone, Default)]
 pub struct XmlFacts {
-    pub interfaces: usize,
-    pub has_default_network: bool,
-    pub has_user_net: bool,
-    pub has_passt: bool,
-    pub has_virbr0: bool,
-    pub forge_whonix_nets: usize,
     /// Libvirt `<source network='...'>` values, in XML order. Order is eth0, eth1, …
     pub nets: Vec<String>,
     pub hostdev_usb: usize,
-    pub hostdev_pci: usize,
     pub usb_ids: Vec<crate::usb::UsbId>,
     pub disk_files: Vec<String>,
     pub forge_profile: Option<String>,
@@ -157,21 +180,7 @@ pub struct XmlFacts {
 pub fn inspect(xml: &str) -> XmlFacts {
     let lower = xml.to_ascii_lowercase();
     let mut facts = XmlFacts {
-        interfaces: count_tag(&lower, "<interface"),
-        has_default_network: lower.contains("network='default'")
-            || lower.contains("network=\"default\""),
-        has_user_net: lower.contains("type='user'") || lower.contains("type=\"user\""),
-        has_passt: lower.contains("type='passt'")
-            || lower.contains("type=\"passt\"")
-            || lower.contains("model='passt'")
-            || lower.contains("model=\"passt\""),
-        has_virbr0: lower.contains("virbr0"),
-        forge_whonix_nets: {
-            let needle = WHONIX_NET;
-            lower.matches(needle).count()
-        },
         hostdev_usb: hostdev_type_count(&lower, "usb"),
-        hostdev_pci: hostdev_type_count(&lower, "pci"),
         ..XmlFacts::default()
     };
     facts.usb_ids = crate::usb::ids_in_xml(xml);
@@ -182,10 +191,6 @@ pub fn inspect(xml: &str) -> XmlFacts {
     facts.forge_digest = meta_text(xml, "base-digest");
     facts.forge_overlay = meta_text(xml, "overlay");
     facts
-}
-
-fn count_tag(xml: &str, tag: &str) -> usize {
-    xml.matches(tag).count()
 }
 
 fn hostdev_type_count(xml: &str, kind: &str) -> usize {
@@ -253,82 +258,14 @@ fn meta_text(xml: &str, tag: &str) -> Option<String> {
     Some(xml[start..end].trim().to_owned())
 }
 
+#[cfg(test)]
 pub fn check_role(xml: &str, expected: Role) -> Result<()> {
-    let facts = inspect(xml);
-    if facts.has_default_network || facts.has_user_net || facts.has_passt || facts.has_virbr0 {
-        return Err(ForgeError::Role(
-            "NAT leaked into domain XML (default/user/passt/virbr0)".to_owned(),
-        ));
-    }
-    if facts.hostdev_pci != 0 {
-        return Err(ForgeError::Role(
-            "PCI hostdev would move cable A (or another PCI device) into the guest; it stays on the host"
-                .to_owned(),
-        ));
-    }
-    match expected {
-        Role::Isolated => {
-            if facts.interfaces != 0 {
-                return Err(ForgeError::Role(format!(
-                    "isolated VM must have no NIC, found {}",
-                    facts.interfaces
-                )));
-            }
-            if facts.hostdev_usb != 0 {
-                return Err(ForgeError::Role(
-                    "isolated VM must not have USB hostdev (dongle B is not for Tsurugi/SIFT)"
-                        .to_owned(),
-                ));
-            }
-        }
-        Role::WhonixWs => {
-            if facts.interfaces != 1 || facts.forge_whonix_nets == 0 {
-                return Err(ForgeError::Role(
-                    "whonix-ws must have exactly one NIC on forge-whonix".to_owned(),
-                ));
-            }
-            if facts.hostdev_usb != 0 {
-                return Err(ForgeError::Role(
-                    "whonix-ws must not hold dongle B".to_owned(),
-                ));
-            }
-        }
-        Role::WhonixGw => {
-            if facts.hostdev_usb != 0 {
-                return Err(ForgeError::Role(
-                    "whonix-gw must not take dongle B as a USB device; B is the host exit of forge-wan"
-                        .to_owned(),
-                ));
-            }
-            let expect = vec![WAN_NET.to_owned(), WHONIX_NET.to_owned()];
-            if facts.nets != expect {
-                return Err(ForgeError::Role(
-                    "whonix-gw needs forge-wan then forge-whonix (eth0 toward the router, eth1 toward the workstation)"
-                        .to_owned(),
-                ));
-            }
-        }
-        Role::OsintClearnet => {
-            if facts.interfaces != 0 {
-                return Err(ForgeError::Role(
-                    "osint-clearnet must not have a libvirt NIC; only USB dongle B".to_owned(),
-                ));
-            }
-        }
-    }
-    Ok(())
+    crate::network::check_domain(xml, expected, crate::network::Mode::Dedicated)
 }
 
 #[must_use]
 pub fn is_forge_domain(xml: &str) -> bool {
     xml.contains(METADATA_NS)
-}
-
-/// Immutable bases cannot be relabeled; libvirt must skip the backing file.
-#[must_use]
-pub fn backing_relabel_skipped(xml: &str) -> bool {
-    let lower = xml.to_ascii_lowercase();
-    lower.contains("<backingstore") && lower.contains("relabel='no'")
 }
 
 #[cfg(test)]
@@ -350,6 +287,85 @@ mod tests {
     }
 
     #[test]
+    fn security_xml_is_specific_to_the_host_driver() {
+        for policy in [
+            crate::security::Policy::Selinux,
+            crate::security::Policy::Apparmor,
+        ] {
+            let xml = domain_xml_for(&isolated_spec(), policy);
+            crate::security::validate_domain(&xml, policy).unwrap();
+            let foreign = if policy == crate::security::Policy::Selinux {
+                crate::security::Policy::Apparmor
+            } else {
+                crate::security::Policy::Selinux
+            };
+            assert!(crate::security::validate_domain(&xml, foreign).is_err());
+            for tampered in [
+                xml.replace("type='dynamic'", "type='none'"),
+                xml.replace("model='dac' relabel='no'", "model='dac' relabel='yes'"),
+                xml.replace("<backingStore type='file'>", "<!-- <backingStore type='file'> --> <unrelated>"),
+                xml.replace("<source file='/var/lib/forge/vms/tsurugi.qcow2'/>", "<source file='/var/lib/forge/vms/tsurugi.qcow2'><seclabel model='dac' relabel='no'/></source>"),
+            ] {
+                assert!(crate::security::validate_domain(&tampered, policy).is_err());
+            }
+            // Attribute formatting is normalized by libvirt; quotes and spacing are immaterial.
+            crate::security::validate_domain(&xml.replace('\'', "\""), policy).unwrap();
+        }
+    }
+
+    #[test]
+    fn comment_cannot_stand_in_for_a_base_security_label() {
+        let xml = domain_xml_for(&isolated_spec(), crate::security::Policy::Apparmor).replace(
+            "<seclabel model='dac' relabel='no'/>",
+            "<!-- <seclabel model='dac' relabel='no'/> -->",
+        );
+        assert!(crate::security::validate_domain(&xml, crate::security::Policy::Apparmor).is_err());
+    }
+
+    #[test]
+    fn both_modes_keep_the_workstation_private_and_forensic_guests_offline() {
+        for mode in [
+            crate::network::Mode::Standard,
+            crate::network::Mode::Dedicated,
+        ] {
+            for role in [
+                Role::Isolated,
+                Role::OsintClearnet,
+                Role::WhonixGw,
+                Role::WhonixWs,
+            ] {
+                let mut spec = isolated_spec();
+                spec.role = role;
+                let xml = domain_xml_with(&spec, crate::security::Policy::Selinux, mode);
+                crate::network::check_domain(&xml, role, mode).unwrap();
+                if role == Role::Isolated {
+                    assert!(!xml.contains("<interface"));
+                }
+                if role == Role::WhonixWs {
+                    assert!(!xml.contains("network='forge-standard'"));
+                    assert!(!xml.contains("network='forge-wan'"));
+                    assert!(
+                        crate::network::check_domain(
+                            &xml.replace("network='forge-whonix'", "network='forge-standard'"),
+                            role,
+                            mode
+                        )
+                        .is_err()
+                    );
+                }
+                assert!(
+                    crate::network::check_domain(
+                        &xml.replace("</devices>", "<interface type='user'/></devices>"),
+                        role,
+                        mode
+                    )
+                    .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn isolated_xml_has_no_nic() {
         let xml = domain_xml(&isolated_spec());
         assert!(!xml.contains("<interface"));
@@ -361,7 +377,7 @@ mod tests {
         assert_eq!(facts.forge_role.as_deref(), Some("isolated"));
         assert!(xml.contains("<backingStore"));
         assert!(xml.contains("relabel='no'"));
-        assert!(backing_relabel_skipped(&xml));
+        crate::security::validate_domain(&xml, crate::security::Policy::Selinux).unwrap();
         assert_eq!(facts.disk_files.len(), 2);
         assert!(facts.disk_files[0].ends_with("vms/tsurugi.qcow2"));
         assert!(facts.disk_files[1].ends_with("bases/tsurugi.qcow2"));
@@ -450,7 +466,13 @@ mod tests {
     #[test]
     fn isolated_rejects_usb_hostdev() {
         let mut xml = domain_xml(&isolated_spec());
-        xml.push_str(&crate::usb::UsbId::parse("0b95:1790").unwrap().hostdev_xml());
+        xml = xml.replace(
+            "</devices>",
+            &format!(
+                "{}</devices>",
+                crate::usb::UsbId::parse("0b95:1790").unwrap().hostdev_xml()
+            ),
+        );
         let err = check_role(&xml, Role::Isolated).expect_err("usb");
         assert!(err.to_string().contains("USB"));
     }
@@ -458,9 +480,7 @@ mod tests {
     #[test]
     fn pci_hostdev_stays_on_the_host() {
         let mut xml = domain_xml(&isolated_spec());
-        xml.push_str(
-            "<hostdev mode='subsystem' type='pci' managed='yes'><source><address domain='0x0000' bus='0x0a' slot='0x00' function='0x0'/></source></hostdev>\n",
-        );
+        xml = xml.replace("</devices>", "<hostdev mode='subsystem' type='pci' managed='yes'><source><address domain='0x0000' bus='0x0a' slot='0x00' function='0x0'/></source></hostdev></devices>");
         let err = check_role(&xml, Role::Isolated).expect_err("pci");
         assert!(err.to_string().contains("PCI"));
     }

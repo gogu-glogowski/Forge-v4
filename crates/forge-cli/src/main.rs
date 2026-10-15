@@ -1,3 +1,5 @@
+mod music;
+
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -10,7 +12,7 @@ use forge_core::{APP_NAME, DongleLink, Forge, ForgeError, Profile, format_list, 
 #[command(
     name = "forge",
     version,
-    about = "Forge 4.0 — Fedora KVM lab, role-locked networking",
+    about = "Forge 4.2.0 — KVM lab with standard or dedicated networking",
     long_about = None,
     arg_required_else_help = true
 )]
@@ -21,8 +23,27 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Configure Standard NAT (default for new labs) or a Dedicated A/B network
+    Setup {
+        #[arg(long, value_parser = ["standard", "dedicated"])]
+        network: Option<String>,
+    },
     /// Download and verify an upstream image into an immutable base
     Pull { profile: String },
+    /// Prepare all bases and default VMs, with optional local background music
+    Prepare {
+        #[arg(long, required = true)]
+        all: bool,
+        /// Local SANS OVA; otherwise unavailable SIFT is explicitly skipped
+        #[arg(long)]
+        sift_ova: Option<std::path::PathBuf>,
+        /// Disable background music
+        #[arg(long)]
+        no_music: bool,
+        /// Directory containing local MP3/OGG/FLAC/WAV/M4A tracks
+        #[arg(long)]
+        music_dir: Option<std::path::PathBuf>,
+    },
     /// Create an overlay VM from a pulled base (role comes from the profile)
     Create {
         profile: String,
@@ -38,9 +59,9 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Attach dongle B to a running Kali. The Whonix gateway uses B as its router exit, not as a USB device
+    /// Dedicated mode: attach dongle B to a running Kali. The Whonix gateway uses B as its router exit, not as a USB device
     Connect { vm: String },
-    /// Remove dongle B. The VM keeps running
+    /// Dedicated mode: remove dongle B. The VM keeps running
     Disconnect { vm: String },
     /// Running state plus role/network proof
     Status { vm: Option<String> },
@@ -58,7 +79,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum DevCommands {
-    /// Host fit: Fedora 44, KVM, libvirtd, Boxes rpm, no NAT on our domains
+    /// Inspect host distribution, services, security, tools and Forge readiness
     Doctor,
     /// Domain XML vs role
     Xml { vm: String },
@@ -129,11 +150,62 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
         ));
     }
     match cli.command {
+        Commands::Setup { network } => {
+            let forge = Forge::open()?;
+            let mode = forge.setup_network(network.as_deref().map(str::parse).transpose()?)?;
+            println!("Network mode: {}", mode.label());
+            println!("Setup complete. Use GNOME Boxes → QEMU System.");
+            Ok(())
+        }
         Commands::Pull { profile } => {
             let profile: Profile = profile.parse()?;
             let forge = Forge::open()?;
             forge.pull(profile, &cli_progress())?;
             println!("pulled {}", profile.id());
+            Ok(())
+        }
+        Commands::Prepare {
+            all: _,
+            sift_ova,
+            no_music,
+            music_dir,
+        } => {
+            if sift_ova.as_ref().is_some_and(|path| !path.is_file()) {
+                return Err(ForgeError::InvalidInput(
+                    "--sift-ova must point to an existing local OVA file".to_owned(),
+                ));
+            }
+            let forge = Forge::open()?;
+            let music = music::Session::default();
+            let stop = music.stopper();
+            ctrlc::set_handler(move || {
+                stop();
+                std::process::exit(130);
+            })
+            .map_err(|error| {
+                ForgeError::Host(format!("cannot install interruption handler: {error}"))
+            })?;
+            music.start(&forge.paths.meta, !no_music, music_dir);
+            let output = cli_progress();
+            let progress = move |event: &ProgressEvent| {
+                music.poll();
+                output(event);
+            };
+            let report = forge.prepare_all(sift_ova.as_deref(), &progress)?;
+            drop(progress);
+            println!(
+                "Prepared: {}",
+                report
+                    .prepared
+                    .iter()
+                    .map(|p| p.id())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            for skipped in report.skipped {
+                println!("Skipped: {skipped}");
+            }
+            println!("VMs are powered off. Open GNOME Boxes → QEMU System when ready.");
             Ok(())
         }
         Commands::Create { profile, name } => {
@@ -145,7 +217,7 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
             }
             if profile == Profile::Whonix {
                 println!(
-                    "Start the gateway first (`forge start whonix-gateway`), then the workstation. Only the gateway receives dongle B."
+                    "Start the gateway first (`forge start whonix-gateway`), then the workstation. The workstation only reaches the gateway."
                 );
             } else {
                 println!(
@@ -200,6 +272,7 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
         Commands::Status { vm } => {
             let forge = Forge::open()?;
             let rows = forge.status(vm.as_deref())?;
+            println!("Network mode: {}", forge.network_mode()?.label());
             print!("{}", format_status(&rows));
             if rows.iter().any(|row| row.role_ok.is_err()) {
                 return Err(ForgeError::Role("role/network proof failed".to_owned()));

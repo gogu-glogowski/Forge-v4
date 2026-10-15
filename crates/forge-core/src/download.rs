@@ -12,7 +12,7 @@ use crate::cmd;
 use crate::error::{ForgeError, Result};
 use crate::progress::{self, ByteProgress, Progress};
 
-pub const USER_AGENT: &str = "forge/4.0";
+pub const USER_AGENT: &str = concat!("forge/", env!("CARGO_PKG_VERSION"));
 
 /// What to do when `dest` already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

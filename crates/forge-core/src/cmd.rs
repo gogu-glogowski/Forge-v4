@@ -203,10 +203,13 @@ fn prompt_sudo() -> Result<()> {
         Ok(())
     } else {
         Err(ForgeError::Host(
-            "sudo password required at the start of pull (run from a terminal, not sudo forge)"
-                .to_owned(),
+            "sudo authorization required; run Forge from a terminal as your normal user".to_owned(),
         ))
     }
+}
+
+pub(crate) fn has_priv_session() -> bool {
+    PRIV.with(|slot| slot.borrow().is_some())
 }
 
 pub fn scope_priv<T>(session: SudoSession, body: impl FnOnce() -> Result<T>) -> Result<T> {

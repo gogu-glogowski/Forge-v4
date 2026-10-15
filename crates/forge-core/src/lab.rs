@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::error::{ForgeError, Result};
 use crate::hostnet;
+use crate::network::Mode;
 use crate::ownership::{self, Ownership};
 use crate::paths::ForgePaths;
 use crate::profile::{Profile, SYSTEM_URI, WHONIX_GW_NAME, WHONIX_WS_NAME};
@@ -67,6 +68,25 @@ impl Forge {
         })
     }
 
+    pub fn prepare_all(
+        &self,
+        sift_ova: Option<&Path>,
+        progress: &Progress,
+    ) -> Result<crate::prepare::PrepareReport> {
+        if sift_ova.is_some_and(|path| !path.is_file()) {
+            return Err(ForgeError::InvalidInput(
+                "--sift-ova must be an existing local OVA file".to_owned(),
+            ));
+        }
+        let run = || crate::prepare::run(self, sift_ova, progress);
+        if self.paths.privileged_bases && !crate::cmd::has_priv_session() {
+            let session = crate::cmd::SudoSession::start()?;
+            crate::cmd::scope_priv(session, run)
+        } else {
+            run()
+        }
+    }
+
     pub fn pull(&self, profile: Profile, progress: &Progress) -> Result<()> {
         pull::pull(&self.paths, profile, progress)?;
         Ok(())
@@ -89,6 +109,9 @@ impl Forge {
         }
         if !dry_run {
             crate::hook::ensure_installed(&self.paths)?;
+            if Mode::load(&self.paths)? == Mode::Standard {
+                self.prepare_standard_networks()?;
+            }
         }
         if pull::needs_privileged_prepare(&self.paths) {
             progress::message(
@@ -196,8 +219,12 @@ impl Forge {
             memory_mib: memory,
             vcpus: profile.vcpus(),
         };
-        let xml = xml::domain_xml(&spec);
-        xml::check_role(&xml, role)?;
+        let xml = xml::domain_xml_with(
+            &spec,
+            crate::security::Policy::for_paths(&self.paths)?,
+            Mode::load(&self.paths)?,
+        );
+        crate::network::check_domain(&xml, role, Mode::load(&self.paths)?)?;
         if dry_run {
             return Ok(Created {
                 name: name.to_owned(),
@@ -255,7 +282,7 @@ impl Forge {
         self.assert_one_wan(&own)?;
         self.ensure_role_shape(&own)?;
         let xml = virt::dumpxml(&self.uri, name)?;
-        xml::check_role(&xml, own.role()?)?;
+        crate::network::check_domain(&xml, own.role()?, Mode::load(&self.paths)?)?;
         self.assert_dongle_exclusive(Some(name))?;
         if name == WHONIX_WS_NAME {
             let gw = virt::domstate(&self.uri, WHONIX_GW_NAME).unwrap_or(VmPower::Shutoff);
@@ -265,7 +292,9 @@ impl Forge {
                 ));
             }
         }
-        if own.role()? == Role::WhonixGw {
+        if Mode::load(&self.paths)? == Mode::Standard {
+            self.prepare_standard_networks()?;
+        } else if own.role()? == Role::WhonixGw {
             self.prepare_gateway_exit(progress)?;
         } else if own.role()? == Role::OsintClearnet {
             let report = hostnet::enforce()?;
@@ -320,7 +349,9 @@ impl Forge {
             }
         }
         let _ = self.maybe_detach_dongle_b(name, own.role()?);
-        if own.role()? == Role::WhonixGw {
+        if Mode::load(&self.paths)? == Mode::Standard {
+            // Standard mode never reconfigures host network interfaces.
+        } else if own.role()? == Role::WhonixGw {
             let _ = hostnet::release_usb();
             let _ = hostnet::enforce();
         } else if own.role()? == Role::OsintClearnet {
@@ -354,7 +385,8 @@ impl Forge {
         let power = virt::domstate(&self.uri, name)?;
         let xml = virt::dumpxml(&self.uri, name)?;
         let facts = xml::inspect(&xml);
-        let role_ok = xml::check_role(&xml, ownership.role()?);
+        let role_ok =
+            crate::network::check_domain(&xml, ownership.role()?, Mode::load(&self.paths)?);
         let dongle = if !facts.usb_ids.is_empty() {
             Some(
                 facts
@@ -364,8 +396,19 @@ impl Forge {
                     .collect::<Vec<_>>()
                     .join(","),
             )
-        } else if facts.nets.iter().any(|net| net == crate::profile::WAN_NET) {
-            Some("via-B".to_owned())
+        } else if facts
+            .nets
+            .iter()
+            .any(|net| net == crate::profile::WAN_NET || net == crate::network::STANDARD_NET)
+        {
+            Some(
+                if Mode::load(&self.paths)? == Mode::Standard {
+                    "host NAT"
+                } else {
+                    "via-B"
+                }
+                .to_owned(),
+            )
         } else {
             None
         };
@@ -380,6 +423,7 @@ impl Forge {
     /// Live-attach dongle B. The VM must already be running (Boxes or `forge start`).
     /// Does not write the device into the persistent definition, so the next boot is blind.
     pub fn connect_dongle(&self, name: &str, progress: &Progress) -> Result<DongleLink> {
+        self.require_dedicated()?;
         let own = self.require_owned(name)?;
         let role = own.role()?;
         if role == Role::WhonixGw {
@@ -406,7 +450,7 @@ impl Forge {
         pull::verify_file_digest(Path::new(&own.base), &own.base_digest, progress)?;
         self.assert_backing(&own)?;
         let xml = virt::dumpxml(&self.uri, name)?;
-        xml::check_role(&xml, role)?;
+        crate::network::check_domain(&xml, role, Mode::load(&self.paths)?)?;
         self.assert_dongle_exclusive(Some(name))?;
         let facts = xml::inspect(&xml);
         let id = match usb::resolve_plugged(&self.paths)? {
@@ -443,6 +487,7 @@ impl Forge {
     /// Take dongle B back. The VM keeps running. Also strips a persistent hostdev
     /// if one was saved outside Forge.
     pub fn disconnect_dongle(&self, name: &str) -> Result<DongleLink> {
+        self.require_dedicated()?;
         let own = self.require_owned(name)?;
         let role = own.role()?;
         let xml = virt::dumpxml(&self.uri, name)?;
@@ -540,7 +585,7 @@ impl Forge {
         let profile = own.profile()?;
         if profile == Profile::Whonix {
             return Err(ForgeError::InvalidInput(
-                "clone of Whonix pair is not 4.0".to_owned(),
+                "clone of Whonix pair is not supported in Forge 4.2.0".to_owned(),
             ));
         }
         if !matches!(profile.role(), Role::Isolated | Role::OsintClearnet) {
@@ -570,7 +615,11 @@ impl Forge {
             memory_mib: profile.memory_mib(),
             vcpus: profile.vcpus(),
         };
-        let xml = xml::domain_xml(&spec);
+        let xml = xml::domain_xml_with(
+            &spec,
+            crate::security::Policy::for_paths(&self.paths)?,
+            Mode::load(&self.paths)?,
+        );
         let ownership = Ownership {
             name: dst.to_owned(),
             uuid: uuid.clone(),
@@ -595,7 +644,7 @@ impl Forge {
         let xml = virt::dumpxml(&self.uri, name)?;
         let mut out = xml.clone();
         out.push_str("\n<!-- Forge role check: ");
-        match xml::check_role(&xml, own.role()?) {
+        match crate::network::check_domain(&xml, own.role()?, Mode::load(&self.paths)?) {
             Ok(()) => out.push_str("ok -->\n"),
             Err(error) => out.push_str(&format!("{error} -->\n")),
         }
@@ -641,9 +690,14 @@ impl Forge {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            if let Ok(own) = ownership::read_json::<Ownership>(&path) {
-                out.push(own);
+            let own: Ownership = ownership::read_json(&path)?;
+            if path.file_stem().and_then(|s| s.to_str()) != Some(own.name.as_str()) {
+                return Err(ForgeError::Ownership(
+                    "ownership filename differs from VM name".to_owned(),
+                ));
             }
+            validate_vm_name(&own.name)?;
+            out.push(own);
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
@@ -654,8 +708,15 @@ impl Forge {
             return Ok(());
         }
         let xml = virt::dumpxml(&self.uri, &own.name)?;
-        if xml::backing_relabel_skipped(&xml) {
+        if crate::security::validate_domain(&xml, crate::security::Policy::for_paths(&self.paths)?)
+            .is_ok()
+        {
             return Ok(());
+        }
+        if virt::domstate(&self.uri, &own.name)?.is_active() {
+            return Err(ForgeError::Role(
+                "stop the VM before repairing its security XML".to_owned(),
+            ));
         }
         self.redefine_owned(own)
     }
@@ -665,7 +726,7 @@ impl Forge {
             return Ok(());
         }
         let xml = virt::dumpxml(&self.uri, &own.name)?;
-        if xml::check_role(&xml, own.role()?).is_ok() {
+        if crate::network::check_domain(&xml, own.role()?, Mode::load(&self.paths)?).is_ok() {
             return Ok(());
         }
         let power = virt::domstate(&self.uri, &own.name)?;
@@ -696,8 +757,21 @@ impl Forge {
             memory_mib: memory,
             vcpus: profile.vcpus(),
         };
-        virt::define_xml(&self.uri, &xml::domain_xml(&spec))?;
+        virt::define_xml(
+            &self.uri,
+            &xml::domain_xml_with(
+                &spec,
+                crate::security::Policy::for_paths(&self.paths)?,
+                Mode::load(&self.paths)?,
+            ),
+        )?;
         Ok(())
+    }
+
+    fn prepare_standard_networks(&self) -> Result<()> {
+        virt::ensure_standard_networks(&self.uri)?;
+        // This handles firewalld forwarding only; never touches NetworkManager or USB.
+        hostnet::allow_libvirt_forward()
     }
 
     fn prepare_gateway_exit(&self, progress: &Progress) -> Result<()> {
@@ -757,6 +831,9 @@ impl Forge {
     }
 
     fn assert_one_wan(&self, own: &Ownership) -> Result<()> {
+        if Mode::load(&self.paths)? == Mode::Standard {
+            return Ok(());
+        }
         let other = match own.role()? {
             Role::WhonixGw => "kali",
             Role::OsintClearnet => WHONIX_GW_NAME,
@@ -793,7 +870,7 @@ impl Forge {
     }
 
     fn maybe_attach_dongle_b(&self, name: &str, role: Role, progress: &Progress) -> Result<()> {
-        if role != Role::OsintClearnet {
+        if Mode::load(&self.paths)? == Mode::Standard || role != Role::OsintClearnet {
             return Ok(());
         }
         match usb::resolve_plugged(&self.paths)? {
@@ -842,7 +919,9 @@ impl Forge {
     }
 
     fn maybe_detach_dongle_b(&self, name: &str, role: Role) -> Result<()> {
-        if !matches!(role, Role::WhonixGw | Role::OsintClearnet) {
+        if Mode::load(&self.paths)? == Mode::Standard
+            || !matches!(role, Role::WhonixGw | Role::OsintClearnet)
+        {
             return Ok(());
         }
         let Ok(xml) = virt::dumpxml(&self.uri, name) else {
@@ -855,6 +934,9 @@ impl Forge {
     }
 
     fn dongle_holder(&self, id: Option<UsbId>, except: Option<&str>) -> Result<Option<String>> {
+        if Mode::load(&self.paths)? == Mode::Standard {
+            return Ok(None);
+        }
         let names = virt::list_all_names(&self.uri).unwrap_or_default();
         for name in names {
             if except == Some(name.as_str()) {
@@ -876,6 +958,9 @@ impl Forge {
     }
 
     fn assert_dongle_exclusive(&self, starting: Option<&str>) -> Result<()> {
+        if Mode::load(&self.paths)? == Mode::Standard {
+            return Ok(());
+        }
         let names = virt::list_all_names(&self.uri).unwrap_or_default();
         let mut holders: Vec<(String, String)> = Vec::new();
         for name in names {
@@ -910,6 +995,60 @@ impl Forge {
         }
     }
 
+    fn require_dedicated(&self) -> Result<()> {
+        if Mode::load(&self.paths)? != Mode::Dedicated {
+            return Err(ForgeError::InvalidInput("USB uplink and cable controls require dedicated mode; standard mode uses the host connection".to_owned()));
+        }
+        Ok(())
+    }
+
+    pub fn network_mode(&self) -> Result<Mode> {
+        Mode::load(&self.paths)
+    }
+
+    pub fn setup_network(&self, requested: Option<Mode>) -> Result<Mode> {
+        let mode = requested.map_or_else(|| Mode::load(&self.paths), Ok)?;
+        if !virt::virsh(&self.uri, &["list", "--name"])?
+            .trim()
+            .is_empty()
+        {
+            return Err(ForgeError::Role(
+                "stop all QEMU guests before setting up or switching network mode".to_owned(),
+            ));
+        }
+        let owned = self.owned_all()?;
+        // Resolve all records before committing a new mode.
+        for own in &owned {
+            own.profile()?;
+            own.role()?;
+            self.require_owned(&own.name)?;
+            let xml = virt::dumpxml(&self.uri, &own.name)?;
+            crate::hook::verify_owned_domain(&xml, own)?;
+        }
+        crate::hook::ensure_installed_for(&self.paths, mode)?;
+        if mode == Mode::Standard {
+            self.prepare_standard_networks()?;
+        } else {
+            virt::ensure_whonix_net(&self.uri)?;
+            virt::ensure_wan_net(&self.uri, None)?;
+        }
+        for own in &owned {
+            if virt::domstate(&self.uri, &own.name)?.is_active() {
+                return Err(ForgeError::Role(
+                    "a VM started during setup; stop all guests and retry".to_owned(),
+                ));
+            }
+            self.redefine_owned(own)?;
+        }
+        if Mode::installed()? != mode {
+            return Err(ForgeError::Host(
+                "network mode changed concurrently; rerun forge setup with all guests stopped"
+                    .to_owned(),
+            ));
+        }
+        Ok(mode)
+    }
+
     pub fn usb_report(&self) -> String {
         usb::format_dev_list(&self.paths)
     }
@@ -919,8 +1058,150 @@ impl Forge {
     }
 
     pub fn enforce_cables(&self) -> Result<String> {
-        let _ = self;
+        self.require_dedicated()?;
         hostnet::enforce()
+    }
+}
+
+impl crate::prepare::Backend for Forge {
+    fn setup(&self) -> Result<()> {
+        if !virt::virsh(&self.uri, &["list", "--name"])?
+            .trim()
+            .is_empty()
+        {
+            return Err(ForgeError::Role(
+                "stop all QEMU guests before prepare --all".to_owned(),
+            ));
+        }
+        // Recover the narrow interruption window after ownership was written but
+        // before virsh define completed. Never adopt an unrecorded overlay/domain.
+        for own in self.owned_all()? {
+            if !virt::domain_exists(&self.uri, &own.name)? {
+                let profile = own.profile()?;
+                let expected_role = if profile == Profile::Whonix && own.name == WHONIX_WS_NAME {
+                    Role::WhonixWs
+                } else {
+                    profile.role()
+                };
+                if own.role()? != expected_role
+                    || (profile == Profile::Whonix
+                        && ![WHONIX_GW_NAME, WHONIX_WS_NAME].contains(&own.name.as_str()))
+                {
+                    return Err(ForgeError::Ownership(
+                        "unfinished VM has an unexpected profile/role".to_owned(),
+                    ));
+                }
+                let expected = if profile == Profile::Whonix && own.name == WHONIX_WS_NAME {
+                    self.paths.named_base(WHONIX_WS_NAME)
+                } else {
+                    self.paths.base_qcow2(profile)
+                };
+                if Path::new(&own.base) != expected
+                    || Path::new(&own.overlay) != self.paths.overlay_qcow2(&own.name)
+                {
+                    return Err(ForgeError::Ownership(
+                        "unfinished VM paths differ from canonical Forge storage".to_owned(),
+                    ));
+                }
+                self.assert_backing(&own)?;
+                pull::verify_file_digest(Path::new(&own.base), &own.base_digest, &progress::noop)?;
+                self.redefine_owned(&own)?;
+            }
+        }
+        self.setup_network(None)?;
+        pull::ensure_lab_storage(&self.paths)
+    }
+    fn base_ready(&self, profile: Profile) -> bool {
+        pull::base_ready(&self.paths, profile)
+    }
+    fn has_references(&self, profile: Profile) -> Result<bool> {
+        Ok(self
+            .owned_all()?
+            .iter()
+            .any(|own| own.profile == profile.id())
+            || if profile == Profile::Whonix {
+                self.paths.overlay_qcow2(WHONIX_GW_NAME).exists()
+                    || self.paths.overlay_qcow2(WHONIX_WS_NAME).exists()
+            } else {
+                self.paths.overlay_qcow2(profile.default_name()).exists()
+            })
+    }
+    fn pull(&self, profile: Profile, sift_ova: Option<&Path>, progress: &Progress) -> Result<()> {
+        if profile == Profile::Sift {
+            pull::pull_sift_from(&self.paths, sift_ova, progress)?;
+        } else {
+            pull::pull(&self.paths, profile, progress)?;
+        }
+        Ok(())
+    }
+    fn verify(&self, profile: Profile, progress: &Progress) -> Result<()> {
+        let proof: crate::ownership::BaseProof =
+            ownership::read_json(&self.paths.proof_file(profile))?;
+        if proof.profile != profile.id()
+            || Path::new(&proof.base_path) != self.paths.base_qcow2(profile)
+            || (profile == Profile::Whonix
+                && (proof.extra.len() != 1
+                    || proof.extra[0].name != WHONIX_WS_NAME
+                    || Path::new(&proof.extra[0].path) != self.paths.named_base(WHONIX_WS_NAME)))
+        {
+            return Err(ForgeError::Verify(
+                "base proof differs from canonical profile paths".to_owned(),
+            ));
+        }
+        pull::verify_base_digest(&self.paths, profile, progress)?;
+        Ok(())
+    }
+    fn ensure_vms(&self, profile: Profile, progress: &Progress) -> Result<()> {
+        let proof: crate::ownership::BaseProof =
+            ownership::read_json(&self.paths.proof_file(profile))?;
+        let mut specs = vec![(
+            profile.default_name(),
+            profile.role(),
+            proof.base_path.as_str(),
+            proof.base_digest.as_str(),
+            profile.memory_mib(),
+        )];
+        if profile == Profile::Whonix {
+            specs[0].0 = WHONIX_GW_NAME;
+            specs.push((
+                WHONIX_WS_NAME,
+                Role::WhonixWs,
+                &proof.extra[0].path,
+                &proof.extra[0].digest,
+                profile.workstation_memory_mib(),
+            ));
+        }
+        for (name, role, base, digest, memory) in specs {
+            if virt::domain_exists(&self.uri, name)? {
+                let own = self.require_owned(name)?;
+                crate::hook::verify_owned_domain(&virt::dumpxml(&self.uri, name)?, &own)?;
+                if own.profile != profile.id()
+                    || own.role()? != role
+                    || own.base != base
+                    || own.base_digest != digest
+                {
+                    return Err(ForgeError::Ownership(format!(
+                        "{name} does not match the verified profile base; refusing to overwrite existing VM data"
+                    )));
+                }
+                self.assert_backing(&own)?;
+                progress::message(
+                    progress,
+                    format!("{name} already exists; keeping its overlay"),
+                );
+                continue;
+            }
+            self.create_one(
+                profile,
+                name,
+                role,
+                Path::new(base),
+                Some((digest, memory)),
+                false,
+                progress,
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -1019,7 +1300,7 @@ mod tests {
             .unwrap();
         assert_eq!(created[0].name, "tsurugi");
         assert!(!created[0].xml.contains("<interface"));
-        xml::check_role(&created[0].xml, Role::Isolated).unwrap();
+        crate::network::check_domain(&created[0].xml, Role::Isolated, Mode::Standard).unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1056,9 +1337,9 @@ mod tests {
             .create(Profile::Kali, None, true, &progress::noop)
             .unwrap();
         assert_eq!(created[0].name, "kali");
-        assert!(!created[0].xml.contains("<interface"));
+        assert!(created[0].xml.contains("forge-standard"));
         assert!(created[0].xml.contains("osint-clearnet"));
-        xml::check_role(&created[0].xml, Role::OsintClearnet).unwrap();
+        crate::network::check_domain(&created[0].xml, Role::OsintClearnet, Mode::Standard).unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1096,7 +1377,7 @@ mod tests {
             .unwrap();
         assert_eq!(created[0].name, "sift");
         assert!(!created[0].xml.contains("<interface"));
-        xml::check_role(&created[0].xml, Role::Isolated).unwrap();
+        crate::network::check_domain(&created[0].xml, Role::Isolated, Mode::Standard).unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1149,8 +1430,8 @@ mod tests {
         assert_eq!(created.len(), 2);
         assert_eq!(created[0].name, "whonix-gateway");
         assert_eq!(created[1].name, "whonix-workstation");
-        xml::check_role(&created[0].xml, Role::WhonixGw).unwrap();
-        xml::check_role(&created[1].xml, Role::WhonixWs).unwrap();
+        crate::network::check_domain(&created[0].xml, Role::WhonixGw, Mode::Standard).unwrap();
+        crate::network::check_domain(&created[1].xml, Role::WhonixWs, Mode::Standard).unwrap();
         assert!(created[0].xml.contains("forge-whonix"));
         assert!(!created[0].xml.contains("type='user'"));
         let _ = fs::remove_dir_all(dir);

@@ -79,6 +79,11 @@ struct Gate<'a> {
     dongle_held: bool,
     digest_ok: bool,
     backing_ok: bool,
+    security_policy: crate::security::Policy,
+    base_protected: bool,
+    network_mode: crate::network::Mode,
+    private_xml: Option<&'a str>,
+    standard_xml: Option<&'a str>,
 }
 
 enum Class {
@@ -105,6 +110,15 @@ pub fn root_entry() -> Result<()> {
         ));
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() == 2
+        && matches!(
+            args[0].as_str(),
+            "--forge-attach" | "--forge-up" | "--forge-down"
+        )
+        && crate::network::Mode::installed()? == crate::network::Mode::Standard
+    {
+        return Ok(());
+    }
     if args.len() == 2 && args[0] == "--forge-attach" {
         return attach_after(&args[1]);
     }
@@ -118,7 +132,15 @@ pub fn root_entry() -> Result<()> {
 }
 
 pub fn ensure_installed(paths: &ForgePaths) -> Result<()> {
-    if hook_ready(paths)? {
+    ensure_installed_for(paths, crate::network::Mode::load(paths)?)
+}
+
+pub(crate) fn ensure_installed_for(paths: &ForgePaths, mode: crate::network::Mode) -> Result<()> {
+    let policy = crate::security::Policy::discover()?;
+    if hook_ready(paths)?
+        && crate::security::Policy::trusted()? == policy
+        && crate::network::Mode::installed()? == mode
+    {
         return Ok(());
     }
     if guest_qemu_running() {
@@ -150,17 +172,24 @@ pub fn ensure_installed(paths: &ForgePaths) -> Result<()> {
             .ok_or_else(|| ForgeError::Host("Forge meta path is not utf-8".to_owned()))?,
     )?;
     let uid = paths::effective_uid();
+    let security_setup = policy.helper_script(paths)?;
+    let security_stamp = policy.install_stamp_script();
+    let network_stamp = mode.install_script();
+    let hook_label = if policy == crate::security::Policy::Selinux {
+        "restorecon -F /etc/libvirt/hooks /etc/libvirt/hooks/qemu"
+    } else {
+        ":"
+    };
     let script = format!(
         "
 set -eu
+{security_setup}
 install -d -m 0755 -o root -g root /etc/libvirt/hooks
 install -m 0755 -o root -g root '{exe}' /etc/libvirt/hooks/qemu.new
 mv -f /etc/libvirt/hooks/qemu.new /etc/libvirt/hooks/qemu
 chown root:root /etc/libvirt/hooks/qemu
 chmod 0755 /etc/libvirt/hooks/qemu
-if command -v restorecon >/dev/null 2>&1; then
-  restorecon -F /etc/libvirt/hooks /etc/libvirt/hooks/qemu || true
-fi
+{hook_label}
 install -d -m 0755 -o root -g root /var/lib/forge
 touch /var/lib/forge/network.lock
 chown root:libvirt /var/lib/forge/network.lock
@@ -172,6 +201,8 @@ uid={uid}
 EOF
 chown root:root /var/lib/forge/operator
 chmod 0644 /var/lib/forge/operator
+{security_stamp}
+{network_stamp}
 echo sha256=$(sha256sum /etc/libvirt/hooks/qemu | awk '{{print $1}}') > /var/lib/forge/hook-installed
 chown root:root /var/lib/forge/hook-installed
 chmod 0644 /var/lib/forge/hook-installed
@@ -182,8 +213,12 @@ elif systemctl is-active --quiet libvirtd.service; then
 fi
 "
     );
-    let session = SudoSession::start()?;
-    cmd::scope_priv(session, || cmd::priv_script(&script))?;
+    if cmd::has_priv_session() {
+        cmd::priv_script(&script)?;
+    } else {
+        let session = SudoSession::start()?;
+        cmd::scope_priv(session, || cmd::priv_script(&script))?;
+    }
     if !hook_ready(paths)? {
         return Err(ForgeError::Host(
             "qemu hook install did not land (root stamp /var/lib/forge/hook-installed missing or virtqemud still predates it)".to_owned(),
@@ -250,6 +285,7 @@ fn libvirt_event(args: &[String]) -> Result<()> {
                 )));
             }
             let role = own.role()?;
+            let network_mode = crate::network::Mode::installed()?;
             let digest_ok = if needs_digest(phase) {
                 pull::verify_file_digest(Path::new(&own.base), &own.base_digest, &progress::noop)?;
                 true
@@ -261,24 +297,25 @@ fn libvirt_event(args: &[String]) -> Result<()> {
             } else {
                 false
             };
-            let (dongle, iface, held) =
-                if matches!(phase, Phase::Prepare | Phase::Start | Phase::Restore) {
-                    dongle_view(&paths, role)?
-                } else {
-                    (Dongle::Absent, None, false)
-                };
-            let wan = if role == Role::WhonixGw
+            let (dongle, iface, held) = if network_mode == crate::network::Mode::Dedicated
                 && matches!(phase, Phase::Prepare | Phase::Start | Phase::Restore)
             {
-                Some(fs::read_to_string(WAN_XML).map_err(|error| {
+                dongle_view(&paths, role)?
+            } else {
+                (Dongle::Absent, None, false)
+            };
+            let wan =
+                if role == Role::WhonixGw && (needs_policy(phase) || phase == Phase::Reconnect) {
+                    Some(fs::read_to_string(WAN_XML).map_err(|error| {
                     ForgeError::Role(format!(
                         "cannot read {WAN_XML} ({error}); `forge start {WHONIX_GW_NAME}` defines it"
                     ))
                 })?)
-            } else {
-                None
-            };
-            if own.role()? == Role::WhonixWs
+                } else {
+                    None
+                };
+            if network_mode == crate::network::Mode::Dedicated
+                && own.role()? == Role::WhonixWs
                 && matches!(phase, Phase::Prepare | Phase::Start | Phase::Restore)
                 && qemu_running(WHONIX_GW_NAME)
             {
@@ -290,6 +327,31 @@ fn libvirt_event(args: &[String]) -> Result<()> {
                     ));
                 }
             }
+            let private_xml = if matches!(role, Role::WhonixGw | Role::WhonixWs)
+                && (needs_policy(phase) || phase == Phase::Reconnect)
+            {
+                Some(fs::read_to_string(
+                    "/etc/libvirt/qemu/networks/forge-whonix.xml",
+                )?)
+            } else {
+                None
+            };
+            let standard_xml = if network_mode == crate::network::Mode::Standard
+                && role == Role::OsintClearnet
+                && (needs_policy(phase) || phase == Phase::Reconnect)
+            {
+                Some(fs::read_to_string(
+                    "/etc/libvirt/qemu/networks/forge-standard.xml",
+                )?)
+            } else {
+                None
+            };
+            let security_policy = if needs_policy(phase) || phase == Phase::Reconnect {
+                crate::security::Policy::trusted()?
+            } else {
+                // Shutdown/release must still clean up the network if confinement was disabled.
+                crate::security::Policy::Selinux
+            };
             let effect = judge(&Gate {
                 phase,
                 role,
@@ -302,6 +364,14 @@ fn libvirt_event(args: &[String]) -> Result<()> {
                 dongle_held: held,
                 digest_ok,
                 backing_ok,
+                security_policy,
+                network_mode,
+                private_xml: private_xml.as_deref(),
+                standard_xml: standard_xml.as_deref(),
+                base_protected: crate::security::base_is_protected(Path::new(&own.base))
+                    && (security_policy == crate::security::Policy::Apparmor
+                        || crate::paths::selinux_type(Path::new(&own.base)).as_deref()
+                            == Some("virt_content_t")),
             })
             .map_err(ForgeError::Role)?;
             apply(&paths, &own, effect)?;
@@ -437,22 +507,51 @@ fn judge(gate: &Gate<'_>) -> std::result::Result<Effect, String> {
         return Err("overlay backing was not verified".to_owned());
     }
     if needs_policy(gate.phase) || gate.phase == Phase::Reconnect {
-        xml::check_role(gate.xml, gate.role).map_err(|error| error.to_string())?;
-        if !xml::backing_relabel_skipped(gate.xml) {
+        if !gate.base_protected {
             return Err(
-                "backing file must stay relabel='no'; `forge start` rewrites that before QEMU"
+                "base must be a root:root regular file with mode 0444 and the immutable flag"
                     .to_owned(),
             );
         }
+        crate::network::check_domain(gate.xml, gate.role, gate.network_mode)
+            .map_err(|error| error.to_string())?;
+        if matches!(gate.role, Role::WhonixGw | Role::WhonixWs)
+            && !gate.private_xml.is_some_and(crate::network::private_ok)
+        {
+            return Err("forge-whonix must be an isolated private link without host IP or forwarding; run forge setup".to_owned());
+        }
+        if gate.network_mode == crate::network::Mode::Standard {
+            let valid_nat = match gate.role {
+                Role::WhonixGw => gate.wan_xml.is_some_and(|xml| {
+                    crate::network::standard_nat_ok(xml, crate::profile::WAN_NET)
+                }),
+                Role::OsintClearnet => gate.standard_xml.is_some_and(|xml| {
+                    crate::network::standard_nat_ok(xml, crate::network::STANDARD_NET)
+                }),
+                _ => true,
+            };
+            if !valid_nat {
+                return Err(
+                    "standard NAT network missing or drifted; run forge setup with guests stopped"
+                        .to_owned(),
+                );
+            }
+        }
+        crate::security::validate_domain(gate.xml, gate.security_policy)
+            .map_err(|e| e.to_string())?;
     }
     if matches!(gate.phase, Phase::Prepare | Phase::Start | Phase::Restore) {
         match gate.role {
-            Role::WhonixGw if gate.kali_running => {
+            Role::WhonixGw
+                if gate.network_mode == crate::network::Mode::Dedicated && gate.kali_running =>
+            {
                 return Err(
                     "one WAN guest at a time; stop kali before starting the gateway".to_owned(),
                 );
             }
-            Role::OsintClearnet if gate.gw_running => {
+            Role::OsintClearnet
+                if gate.network_mode == crate::network::Mode::Dedicated && gate.gw_running =>
+            {
                 return Err(format!(
                     "one WAN guest at a time; stop {WHONIX_GW_NAME} before starting kali"
                 ));
@@ -462,13 +561,16 @@ fn judge(gate: &Gate<'_>) -> std::result::Result<Effect, String> {
             }
             _ => {}
         }
-        if matches!(gate.role, Role::WhonixGw | Role::OsintClearnet) && gate.dongle_held {
+        if gate.network_mode == crate::network::Mode::Dedicated
+            && matches!(gate.role, Role::WhonixGw | Role::OsintClearnet)
+            && gate.dongle_held
+        {
             return Err(
                 "dongle B is already open by another QEMU process; stop that guest first"
                     .to_owned(),
             );
         }
-        if gate.role == Role::WhonixGw {
+        if gate.network_mode == crate::network::Mode::Dedicated && gate.role == Role::WhonixGw {
             let wan = gate.wan_xml.ok_or_else(|| {
                 format!("forge-wan is not defined; `forge start {WHONIX_GW_NAME}` once")
             })?;
@@ -495,6 +597,9 @@ fn judge(gate: &Gate<'_>) -> std::result::Result<Effect, String> {
 }
 
 fn effect_for(gate: &Gate<'_>) -> Effect {
+    if gate.network_mode == crate::network::Mode::Standard {
+        return Effect::None;
+    }
     match gate.phase {
         // NetworkManager calls back into libvirt, so nmcli stays out of this process.
         Phase::Started if gate.role == Role::WhonixGw => Effect::LeaseAfter,
@@ -554,6 +659,16 @@ fn classify(arg: &str, xml: &str, own: Option<&Ownership>) -> Class {
         return Class::Impostor(format!("{arg}: ownership URI is not {SYSTEM_URI}"));
     }
     Class::Forge(own.clone())
+}
+
+pub(crate) fn verify_owned_domain(xml: &str, own: &Ownership) -> Result<()> {
+    match classify(&own.name, xml, Some(own)) {
+        Class::Forge(_) => Ok(()),
+        Class::Impostor(reason) => Err(ForgeError::Ownership(reason)),
+        Class::Foreign => Err(ForgeError::Ownership(
+            "refusing to replace a non-Forge domain during setup".to_owned(),
+        )),
+    }
 }
 
 fn needs_digest(phase: Phase) -> bool {
@@ -715,7 +830,10 @@ fn hook_ready(paths: &ForgePaths) -> Result<bool> {
     let Some(stamp) = trusted_stamp()? else {
         return Ok(false);
     };
-    if !Path::new(OPERATOR_PATH).is_file() {
+    if !Path::new(OPERATOR_PATH).is_file()
+        || !Path::new(crate::security::POLICY_PATH).exists()
+        || !Path::new(crate::network::MODE_PATH).exists()
+    {
         return Ok(false);
     }
     let exe = std::env::current_exe().map_err(|error| {
@@ -724,6 +842,7 @@ fn hook_ready(paths: &ForgePaths) -> Result<bool> {
     if file_sha256(&exe)? != stamp {
         return Ok(false);
     }
+    crate::security::Policy::trusted()?;
     Ok(operator_matches(paths)? && daemon_sees_hook()?)
 }
 
@@ -1051,7 +1170,115 @@ mod tests {
             dongle_held: false,
             digest_ok: true,
             backing_ok: true,
+            security_policy: crate::security::Policy::Selinux,
+            base_protected: true,
+            network_mode: crate::network::Mode::Dedicated,
+            private_xml: Some(
+                "<network><name>forge-whonix</name><bridge name='virbr-forgewx'/></network>",
+            ),
+            standard_xml: None,
         }
+    }
+
+    #[test]
+    fn apparmor_start_is_accepted_only_with_matching_policy() {
+        let xml = kali_xml()
+            .replace(
+                "model='selinux' relabel='yes'",
+                "model='apparmor' relabel='yes'",
+            )
+            .replace("          <seclabel model='selinux' relabel='no'/>\n", "");
+        let mut gate = gate(Phase::Prepare, Role::OsintClearnet, &xml);
+        gate.security_policy = crate::security::Policy::Apparmor;
+        assert!(judge(&gate).is_ok());
+        gate.security_policy = crate::security::Policy::Selinux;
+        assert!(judge(&gate).is_err());
+    }
+
+    #[test]
+    fn mutable_base_blocks_start_but_does_not_block_release() {
+        let xml = kali_xml();
+        let mut gate = gate(Phase::Prepare, Role::OsintClearnet, &xml);
+        gate.base_protected = false;
+        assert!(judge(&gate).is_err());
+        gate.phase = Phase::Release;
+        assert!(judge(&gate).is_ok());
+    }
+
+    fn standard_domain(role: Role) -> String {
+        crate::xml::domain_xml_with(
+            &DomainSpec {
+                name: "fixture",
+                uuid: UUID,
+                profile: "fixture",
+                role,
+                overlay: "/var/lib/forge/vms/fixture.qcow2",
+                base: "/var/lib/forge/bases/fixture.qcow2",
+                base_digest: "sha256:abc",
+                memory_mib: 2048,
+                vcpus: 2,
+            },
+            crate::security::Policy::Selinux,
+            crate::network::Mode::Standard,
+        )
+    }
+
+    #[test]
+    fn standard_kali_needs_no_dongle_and_can_run_with_gateway() {
+        let xml = standard_domain(Role::OsintClearnet);
+        let nat = crate::network::standard_nat_xml(crate::network::STANDARD_NET);
+        let mut gate = gate(Phase::Prepare, Role::OsintClearnet, &xml);
+        gate.network_mode = crate::network::Mode::Standard;
+        gate.standard_xml = Some(&nat);
+        gate.gw_running = true;
+        gate.dongle_held = true;
+        assert_eq!(judge(&gate).unwrap(), Effect::None);
+        for phase in [Phase::Started, Phase::Stopped, Phase::Release] {
+            gate.phase = phase;
+            assert_eq!(
+                judge(&gate).unwrap(),
+                Effect::None,
+                "standard mode must never schedule USB or NetworkManager workers"
+            );
+        }
+        gate.phase = Phase::Prepare;
+        gate.standard_xml = None;
+        assert!(judge(&gate).is_err());
+    }
+
+    #[test]
+    fn standard_gateway_uses_host_nat_and_no_b_lease() {
+        let xml = standard_domain(Role::WhonixGw);
+        let nat = crate::network::standard_nat_xml(crate::profile::WAN_NET);
+        let mut gate = gate(Phase::Prepare, Role::WhonixGw, &xml);
+        gate.network_mode = crate::network::Mode::Standard;
+        gate.wan_xml = Some(&nat);
+        gate.kali_running = true;
+        assert_eq!(judge(&gate).unwrap(), Effect::None);
+        gate.phase = Phase::Reconnect;
+        assert_eq!(judge(&gate).unwrap(), Effect::None);
+        gate.private_xml = None;
+        assert!(judge(&gate).is_err());
+    }
+
+    #[test]
+    fn standard_workstation_still_requires_gateway_and_private_link() {
+        let xml = standard_domain(Role::WhonixWs);
+        let mut gate = gate(Phase::Prepare, Role::WhonixWs, &xml);
+        gate.network_mode = crate::network::Mode::Standard;
+        assert!(judge(&gate).is_err());
+        gate.gw_running = true;
+        assert!(judge(&gate).is_ok());
+        gate.private_xml = Some(
+            "<network><name>forge-whonix</name><bridge name='virbr-forgewx'/><forward mode='nat'/></network>",
+        );
+        assert!(judge(&gate).is_err());
+    }
+
+    #[test]
+    fn a_different_configured_mode_cannot_silently_change_vm_connectivity() {
+        let xml = standard_domain(Role::Isolated);
+        assert!(judge(&gate(Phase::Prepare, Role::Isolated, &xml)).is_err());
     }
 
     #[test]
@@ -1163,7 +1390,7 @@ mod tests {
     #[test]
     fn unplugged_gateway_with_isolated_wan_releases_the_lease() {
         let xml = gw_xml();
-        let wan = "<network><bridge name='virbr-forgewan'/><ip address='10.0.2.2' netmask='255.255.255.0'/></network>";
+        let wan = "<network><name>forge-wan</name><bridge name='virbr-forgewan'/><ip address='10.0.2.2' netmask='255.255.255.0'/></network>";
         let mut gate = gate(Phase::Prepare, Role::WhonixGw, &xml);
         gate.wan_xml = Some(wan);
         assert_eq!(judge(&gate).expect("isolated"), Effect::None);
@@ -1176,7 +1403,7 @@ mod tests {
             "</devices>",
             "<hostdev mode='subsystem' type='pci' managed='yes'/></devices>",
         );
-        let wan = "<network><bridge name='virbr-forgewan'/><ip address='10.0.2.2' netmask='255.255.255.0'/></network>";
+        let wan = "<network><name>forge-wan</name><bridge name='virbr-forgewan'/><ip address='10.0.2.2' netmask='255.255.255.0'/></network>";
         let mut gate = gate(Phase::Prepare, Role::WhonixGw, &xml);
         gate.wan_xml = Some(wan);
         let err = judge(&gate).unwrap_err();
