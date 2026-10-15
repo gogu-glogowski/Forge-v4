@@ -126,6 +126,13 @@ fn distribution_check(os: &OsRelease) -> Check {
                 os.pretty_name
             ),
         ),
+        Distribution::Arch | Distribution::Manjaro => (
+            CheckStatus::Ok,
+            format!(
+                "{} — recognized rolling target; fully update with pacman -Syu, then verify host/security readiness",
+                os.pretty_name
+            ),
+        ),
         Distribution::Unknown => (
             CheckStatus::Fail,
             format!(
@@ -141,7 +148,7 @@ fn distribution_check(os: &OsRelease) -> Check {
         name: "Host".to_owned(),
         detail,
         fix: (status == CheckStatus::Fail).then(|| {
-            "Use Fedora 44+ or a recognized Debian, Ubuntu or Pop!_OS port target.".to_owned()
+            "Use Fedora 44+ or a recognized Debian, Ubuntu Pop!_OS, Arch or Manjaro port target.".to_owned()
         }),
     }
 }
@@ -267,7 +274,11 @@ fn host_checks(host: &Host) -> Vec<Check> {
     }
     if matches!(
         host.os.distribution,
-        Distribution::Debian | Distribution::Ubuntu | Distribution::Pop
+        Distribution::Debian
+            | Distribution::Ubuntu
+            | Distribution::Pop
+            | Distribution::Arch
+            | Distribution::Manjaro
     ) {
         checks.push(Check {
             status: if host.os.distribution == Distribution::Pop && host.os.version == "24.04" {
@@ -275,8 +286,12 @@ fn host_checks(host: &Host) -> Vec<Check> {
             } else {
                 CheckStatus::Fail
             }, name: "port readiness".to_owned(),
-            detail: "Standard mode was exercised on Pop!_OS 24.04 with AppArmor, Boxes and Whonix; firewall integration across distributions and dedicated A/B hardware validation remain pending.".to_owned(),
-            fix: None,
+            detail: if matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro) {
+                "Rolling target recognized. Stock Arch libvirt disables AppArmor/SELinux drivers; a compatible confined libvirt build is required. Manjaro capabilities must be checked separately; firewall integration and live VM validation remain pending.".to_owned()
+            } else {
+                "Standard mode was exercised on Pop!_OS 24.04 with AppArmor, Boxes and Whonix; firewall integration across distributions and dedicated A/B hardware validation remain pending.".to_owned()
+            },
+            fix: matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro).then(|| "Use an AppArmor-enabled libvirt build with virt-aa-helper profiles; inspect virsh capabilities before setup.".to_owned()),
         });
     }
     checks
@@ -799,9 +814,9 @@ mod tests {
     }
 
     #[test]
-    fn arch_is_fail() {
+    fn arch_rolling_is_recognized_but_requires_separate_readiness_checks() {
         let os = "ID=arch\nPRETTY_NAME=\"Arch Linux\"\n";
-        assert_eq!(evaluate_os_release(os).status, CheckStatus::Fail);
+        assert_eq!(evaluate_os_release(os).status, CheckStatus::Ok);
     }
 
     fn snapshot(release: &str) -> Host {
@@ -846,7 +861,7 @@ mod tests {
 
     #[test]
     fn port_targets_are_recognized_but_not_falsely_ready() {
-        for id in ["debian", "ubuntu", "pop"] {
+        for id in ["debian", "ubuntu", "pop", "arch", "manjaro"] {
             let host = snapshot(&format!("ID={id}\nVERSION_ID=24.04"));
             let checks = host_checks(&host);
             assert_eq!(checks[0].status, CheckStatus::Ok);

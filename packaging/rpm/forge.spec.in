@@ -1,0 +1,41 @@
+Name:           forge
+Version:        @VERSION@
+Release:        1%{?dist}
+Summary:        Verified KVM lab with GNOME Boxes integration
+License:        Apache-2.0 AND CC-BY-4.0
+URL:            https://github.com/gogu-glogowski/Forge-v4
+Source0:        forge-%{version}-payload.tar.xz
+ExclusiveArch:  x86_64
+Requires:       fedora-release >= 44
+Requires:       qemu-kvm qemu-img libvirt-client libvirt-daemon-kvm gnome-boxes
+Requires:       gnupg2 curl ca-certificates 7zip tar xz e2fsprogs
+Requires:       NetworkManager iproute procps-ng psmisc systemd sudo coreutils util-linux
+Requires:       policycoreutils policycoreutils-python-utils libselinux-utils selinux-policy-targeted
+Recommends:     mpv
+
+# The payload is a release binary, already built by packaging/rpm/build.py.
+# No services, hooks, user groups or VM data are changed by RPM scriptlets.
+%description
+Forge manages verified immutable VM bases, writable overlays and libvirt policies.
+New labs use Standard NAT; Dedicated A/B hardware support remains experimental.
+Run forge setup as the normal user with guests stopped to activate the root hook.
+Music streams online through optional mpv; MP3 payloads are not included.
+
+%prep
+%setup -q -n forge-%{version}-payload
+
+%build
+
+%install
+mkdir -p "%{buildroot}/usr"
+cp -a usr/. "%{buildroot}/usr/"
+
+%files
+%{_bindir}/forge
+%doc %{_datadir}/doc/forge/
+%license %{_datadir}/licenses/forge/
+%dir %{_datadir}/forge
+%dir %{_datadir}/forge/music
+%{_datadir}/forge/music/CREDITS.md
+%{_datadir}/forge/music/LICENSE-CC-BY-4.0.txt
+%{_datadir}/forge/music/manifest.json

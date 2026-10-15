@@ -8,6 +8,29 @@ check image hashes, disk backing chains, confinement and network roles at startu
 
 [![Ten kod brzmi lepiej z muzyką — odpal na YouTube](assets/music-banner.svg)](https://www.youtube.com/watch?v=CZfbJlhUxw8)
 
+## Download Forge 4.2.0
+
+Desktop **x86_64**, systemd and NetworkManager. Choose the native package below.
+
+| Distribution | Target | Download | Validation / requirements |
+| --- | --- | --- | --- |
+| <img src="assets/distros/debian.svg" height="28" alt="Debian logo"> **Debian** | 13+ | [DEB](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge_4.2.0-1_amd64.deb) | Live validation pending |
+| <img src="assets/distros/ubuntu.png" height="28" alt="Ubuntu logo"> **Ubuntu** | 24.04+ | [DEB](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge_4.2.0-1_amd64.deb) | Live validation pending |
+| <img src="assets/distros/pop-os.svg" height="28" alt="Pop!_OS logo"> **Pop!_OS** | 24.04 | [DEB](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge_4.2.0-1_amd64.deb) | Live Standard-mode checks passed |
+| <img src="assets/distros/fedora.svg" height="28" alt="Fedora logo"> **Fedora** | 44+ | [RPM](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge-4.2.0-1.x86_64.rpm) | Native desktop validation pending |
+| <img src="assets/distros/arch.svg" height="28" alt="Arch Linux logo"> **Arch Linux** | Fully updated rolling release | [PKG.TAR.ZST](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge-4.2.0-1-x86_64.pkg.tar.zst) | Requires confined libvirt; see below |
+| <img src="assets/distros/manjaro.svg" height="28" alt="Manjaro logo"> **Manjaro** | Fully updated rolling release | [PKG.TAR.ZST](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge-4.2.0-1-x86_64.pkg.tar.zst) | Check libvirt confinement; validation pending |
+
+[SHA-256 checksums](packages/4.2.0/SHA256SUMS) · [Logo sources](assets/distros/README.md)
+
+Packages are unsigned. All three formats passed isolated installation, reinstallation
+and removal checks; this does not validate native dependency resolution or every
+distribution. The binaries require **glibc >= 2.39**.
+
+**Arch / Manjaro:** package availability does not mean the host is ready. Stock Arch
+libvirt disables both AppArmor and SELinux drivers; Forge requires a compatible
+confined libvirt build. See [Arch requirements](packaging/arch/README.md).
+
 ## Install the DEB release
 
 For amd64 Pop!_OS 24.04 / Ubuntu 24.04 and newer compatible systems, download
@@ -28,6 +51,21 @@ out/in as described below. With guests stopped, run `/usr/bin/forge setup` and
 `/usr/bin/forge prepare --all`. Package installation itself does not reconfigure
 a running lab. A previous `~/.local/bin/forge` may shadow the DEB binary;
 check `type -a forge`. Music attribution is in `/usr/share/forge/music`; local audio is optional.
+
+## Other native package formats
+
+- **Fedora 44+ x86_64:** [RPM builder and installation](packaging/rpm/README.md).
+- **Current Arch Linux / Manjaro x86_64 rolling releases:**
+  [PKGBUILD, package builder and confinement requirements](packaging/arch/README.md).
+  Forge recognizes both IDs, uses pacman dependency hints and detects native Boxes.
+  Fully update the host with `pacman -Syu`; old/partial rolling upgrades are outside scope.
+
+The stock Arch libvirt recipe checked on 2026-10-15 disables AppArmor and SELinux
+security drivers. The Forge package can install, but a compatible confined libvirt
+build is required before setup/start; installing AppArmor alone does not add that
+driver. Manjaro's actual build must be checked separately. Forge retains its refusal
+to run unconfined guests. These packages were built locally on Pop!_OS; clean
+Fedora/Arch/Manjaro desktop VM smoke tests remain pending. No ISO is built.
 
 ## Choose a network mode
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.2.0 — multi-distribution packages (2026-10-15)
+
+- Add unsigned Fedora 44+ x86_64 binary RPM and native-build recipe.
+- Add Arch/Manjaro rolling recognition, pacman dependency hints and native Boxes detection.
+- Add checksum-pinned PKGBUILD/source archive and .pkg.tar.zst builder.
+- Preserve confinement requirements: official Arch libvirt 12.8.0 disables both
+  AppArmor and SELinux drivers. Document the required compatible libvirt build and
+  provide a local recipe patch helper. Manjaro capabilities and native VM smoke
+  tests remain pending; no silent DAC-only fallback is introduced.
+- Publish DEB, RPM and Arch downloads with checksums and official distribution logos in README.
+
 ## 4.2.0 — 2026-10-15
 
 - Detect Fedora, Debian, Ubuntu and Pop!_OS hosts, libvirt services, QEMU accounts,

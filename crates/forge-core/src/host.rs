@@ -6,6 +6,8 @@ use crate::cmd;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Distribution {
     Fedora,
+    Arch,
+    Manjaro,
     Debian,
     Ubuntu,
     Pop,
@@ -26,6 +28,8 @@ impl OsRelease {
         let id = config_value(text, "ID").unwrap_or_default();
         let distribution = match id.as_str() {
             "fedora" => Distribution::Fedora,
+            "arch" => Distribution::Arch,
+            "manjaro" => Distribution::Manjaro,
             "debian" => Distribution::Debian,
             "ubuntu" => Distribution::Ubuntu,
             "pop" => Distribution::Pop,
@@ -64,14 +68,15 @@ impl OsRelease {
                     dependency.debian_package
                 }
             }
+            Distribution::Arch | Distribution::Manjaro => dependency.arch_package,
             Distribution::Unknown => return None,
         };
-        let manager = if self.distribution == Distribution::Fedora {
-            "dnf"
-        } else {
-            "apt"
+        let manager = match self.distribution {
+            Distribution::Fedora => "dnf install",
+            Distribution::Arch | Distribution::Manjaro => "pacman -S --needed",
+            _ => "apt install",
         };
-        Some(format!("sudo {manager} install {package}"))
+        Some(format!("sudo {manager} {package}"))
     }
 
     fn legacy_seven_zip(&self) -> bool {
@@ -113,6 +118,7 @@ pub struct Dependency {
     pub name: &'static str,
     pub alternatives: &'static [&'static str],
     pub fedora_package: &'static str,
+    pub arch_package: &'static str,
     pub debian_package: &'static str,
     pub required: bool,
 }
@@ -122,6 +128,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "lsattr",
         alternatives: &["lsattr"],
         fedora_package: "e2fsprogs",
+        arch_package: "e2fsprogs",
         debian_package: "e2fsprogs",
         required: true,
     },
@@ -129,6 +136,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "ps",
         alternatives: &["ps"],
         fedora_package: "procps-ng",
+        arch_package: "procps-ng",
         debian_package: "procps",
         required: true,
     },
@@ -136,6 +144,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "QEMU",
         alternatives: &["qemu-system-x86_64"],
         fedora_package: "qemu-kvm",
+        arch_package: "qemu-desktop",
         debian_package: "qemu-system-x86",
         required: true,
     },
@@ -143,6 +152,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "qemu-img",
         alternatives: &["qemu-img"],
         fedora_package: "qemu-img",
+        arch_package: "qemu-img",
         debian_package: "qemu-utils",
         required: true,
     },
@@ -150,6 +160,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "libvirt virsh",
         alternatives: &["virsh"],
         fedora_package: "libvirt-client libvirt-daemon-kvm",
+        arch_package: "libvirt",
         debian_package: "libvirt-clients libvirt-daemon-system",
         required: true,
     },
@@ -157,6 +168,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "GNOME Boxes",
         alternatives: &["gnome-boxes"],
         fedora_package: "gnome-boxes",
+        arch_package: "gnome-boxes",
         debian_package: "gnome-boxes",
         required: true,
     },
@@ -164,6 +176,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "NetworkManager CLI",
         alternatives: &["nmcli"],
         fedora_package: "NetworkManager",
+        arch_package: "networkmanager",
         debian_package: "network-manager",
         required: true,
     },
@@ -171,6 +184,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "systemctl",
         alternatives: &["systemctl"],
         fedora_package: "systemd",
+        arch_package: "systemd",
         debian_package: "systemd",
         required: true,
     },
@@ -178,6 +192,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "D-Bus busctl",
         alternatives: &["busctl"],
         fedora_package: "systemd",
+        arch_package: "systemd",
         debian_package: "systemd",
         required: true,
     },
@@ -185,6 +200,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "GnuPG",
         alternatives: &["gpg"],
         fedora_package: "gnupg2",
+        arch_package: "gnupg",
         debian_package: "gnupg",
         required: true,
     },
@@ -192,6 +208,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "curl",
         alternatives: &["curl"],
         fedora_package: "curl",
+        arch_package: "curl",
         debian_package: "curl",
         required: true,
     },
@@ -199,6 +216,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "7z",
         alternatives: &["7z", "7zz", "7za"],
         fedora_package: "7zip",
+        arch_package: "7zip",
         debian_package: "7zip",
         required: true,
     },
@@ -206,6 +224,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "tar",
         alternatives: &["tar"],
         fedora_package: "tar",
+        arch_package: "tar",
         debian_package: "tar",
         required: true,
     },
@@ -213,6 +232,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "xz",
         alternatives: &["xz"],
         fedora_package: "xz",
+        arch_package: "xz",
         debian_package: "xz-utils",
         required: true,
     },
@@ -220,6 +240,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "chattr",
         alternatives: &["chattr"],
         fedora_package: "e2fsprogs",
+        arch_package: "e2fsprogs",
         debian_package: "e2fsprogs",
         required: true,
     },
@@ -227,6 +248,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "ip",
         alternatives: &["ip"],
         fedora_package: "iproute",
+        arch_package: "iproute2",
         debian_package: "iproute2",
         required: true,
     },
@@ -234,6 +256,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "pidof",
         alternatives: &["pidof"],
         fedora_package: "psmisc",
+        arch_package: "procps-ng",
         debian_package: "sysvinit-utils",
         required: true,
     },
@@ -241,6 +264,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "sudo",
         alternatives: &["sudo"],
         fedora_package: "sudo",
+        arch_package: "sudo",
         debian_package: "sudo",
         required: true,
     },
@@ -248,6 +272,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "stdbuf",
         alternatives: &["stdbuf"],
         fedora_package: "coreutils",
+        arch_package: "coreutils",
         debian_package: "coreutils",
         required: true,
     },
@@ -255,6 +280,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "getent",
         alternatives: &["getent"],
         fedora_package: "glibc-common",
+        arch_package: "glibc",
         debian_package: "libc-bin",
         required: true,
     },
@@ -262,6 +288,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         name: "virt-manager",
         alternatives: &["virt-manager"],
         fedora_package: "virt-manager virt-viewer",
+        arch_package: "virt-manager virt-viewer",
         debian_package: "virt-manager virt-viewer",
         required: false,
     },
@@ -519,6 +546,9 @@ impl Host {
                     &["-W", "-f=${db:Status-Status}", "gnome-boxes"],
                 )
                 .is_some_and(|status| status.trim() == "installed"),
+            Distribution::Arch | Distribution::Manjaro => {
+                probe.output("pacman", &["-Q", "gnome-boxes"]).is_some()
+            }
             Distribution::Unknown => false,
         };
         Self {
@@ -646,6 +676,8 @@ mod tests {
             ("debian", Distribution::Debian),
             ("ubuntu", Distribution::Ubuntu),
             ("pop", Distribution::Pop),
+            ("arch", Distribution::Arch),
+            ("manjaro", Distribution::Manjaro),
             ("mint", Distribution::Unknown),
         ] {
             let os = OsRelease::parse(&format!(
@@ -667,6 +699,8 @@ mod tests {
             ("ID=debian\nVERSION_ID=12", "sudo apt install p7zip-full"),
             ("ID=ubuntu\nVERSION_ID=24.04", "sudo apt install 7zip"),
             ("ID=pop\nVERSION_ID=22.04", "sudo apt install p7zip-full"),
+            ("ID=arch", "sudo pacman -S --needed 7zip"),
+            ("ID=manjaro", "sudo pacman -S --needed 7zip"),
         ] {
             assert_eq!(
                 OsRelease::parse(release).install_hint(zip).as_deref(),
@@ -674,7 +708,7 @@ mod tests {
             );
         }
         assert_eq!(
-            OsRelease::parse("ID=arch\nID_LIKE=debian").install_hint(zip),
+            OsRelease::parse("ID=unknown\nID_LIKE=arch").install_hint(zip),
             None
         );
     }
@@ -720,6 +754,25 @@ mod tests {
         assert!(Host::probe(&base().command("dpkg-query", &args, "installed")).native_boxes);
         assert!(!Host::probe(&base().command("dpkg-query", &args, "config-files")).native_boxes);
         assert!(!Host::probe(&base()).native_boxes);
+    }
+
+    #[test]
+    fn rolling_hosts_detect_native_boxes_and_specific_package_hints() {
+        for id in ["arch", "manjaro"] {
+            let fixture = Fixture::default().file("/etc/os-release", &format!("ID={id}"));
+            assert!(!Host::probe(&fixture).native_boxes);
+            let fixture = fixture.command("pacman", &["-Q", "gnome-boxes"], "gnome-boxes 49.0-1");
+            let host = Host::probe(&fixture);
+            assert!(host.native_boxes);
+            let dep = *DEPENDENCIES
+                .iter()
+                .find(|d| d.name == "NetworkManager CLI")
+                .unwrap();
+            assert_eq!(
+                host.os.install_hint(dep).as_deref(),
+                Some("sudo pacman -S --needed networkmanager")
+            );
+        }
     }
 
     #[test]

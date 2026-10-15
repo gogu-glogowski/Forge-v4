@@ -1,0 +1,36 @@
+pkgname=forge
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Verified KVM lab with GNOME Boxes and online music'
+arch=('x86_64')
+url='https://github.com/gogu-glogowski/Forge-v4'
+license=('Apache-2.0' 'CC-BY-4.0')
+depends=('glibc>=2.39' 'gcc-libs' 'qemu-desktop' 'qemu-img' 'libvirt' 'gnome-boxes'
+         'apparmor' 'gnupg' 'curl' 'ca-certificates' '7zip' 'tar' 'xz' 'e2fsprogs'
+         'networkmanager' 'iproute2' 'procps-ng' 'psmisc' 'systemd' 'sudo'
+         'coreutils' 'util-linux' 'dnsmasq' 'nftables' 'iptables')
+makedepends=('rust>=1.89' 'cargo')
+optdepends=('mpv: online background music during prepare --all')
+options=('!strip' '!debug')
+source=("forge-${pkgver}-source.tar.gz")
+sha256sums=('@SOURCE_SHA256@')
+
+build() {
+  cd "forge-${pkgver}"
+  local offline=()
+  [[ ${FORGE_CARGO_OFFLINE:-0} == 1 ]] && offline=(--offline)
+  cargo build --release --locked -p forge-cli "${offline[@]}"
+}
+
+package() {
+  cd "forge-${pkgver}"
+  install -Dm755 "${CARGO_TARGET_DIR:-target}/release/forge" "${pkgdir}/usr/bin/forge"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/forge/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/forge/README.md"
+  install -Dm644 CHANGELOG.md "${pkgdir}/usr/share/doc/forge/CHANGELOG.md"
+  install -Dm644 packaging/arch/README.md "${pkgdir}/usr/share/doc/forge/README.Arch.md"
+  local item
+  for item in CREDITS.md LICENSE-CC-BY-4.0.txt manifest.json; do
+    install -Dm644 "assets/music/${item}" "${pkgdir}/usr/share/forge/music/${item}"
+  done
+}
