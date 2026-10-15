@@ -77,3 +77,25 @@ Hard requirement for the entire official project and every port:
 - Names of guest VMs must not alter the host computer's or operator's identity.
 - Test preservation of account identity and all hostname forms on every port.
   Fail and investigate any unrequested identity change; do not mark the port ready.
+
+
+## Storage capacity, recovery and atomic image installation
+
+- Show the actual filesystems, free space and selected destination for cache,
+  immutable bases and overlays. Ask explicitly before selecting a new location.
+  A large physical drive does not mean /var and /home share free space.
+- Never fill the host root filesystem. Check destination capacity before copying,
+  keep a host reserve, and budget both Whonix bases together. Explain conservative
+  logical-size budgeting of sparse images rather than claiming unused virtual disk
+  capacity is already physically allocated.
+- Preserve sparse image layout. Copy into a private temporary file on the same
+  destination filesystem, flush and apply ownership/labels, then atomically rename.
+  On failure retain the previously verified canonical base and remove partial files.
+- Storage outside /var/lib/forge must remain root-owned and protected from user
+  path substitution. Preserve SELinux/AppArmor policy and libvirt backing paths;
+  never use the unprivileged FORGE_DATA_DIR override as a production migration.
+- Migrate only with guests stopped; verify the copy before switching/removing the
+  original. Back up mount configuration, make the mount persistent and preserve
+  image signatures/proofs, permissions, labels, immutable flags and VM definitions.
+- Reuse verified bases and downloaded signed archives after recovery. Do not
+  restart every download, delete complete guests or hide storage failures.

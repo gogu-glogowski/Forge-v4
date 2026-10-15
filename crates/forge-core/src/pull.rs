@@ -175,6 +175,9 @@ fn pull_whonix(paths: &ForgePaths, progress: &Progress) -> Result<PathBuf> {
     })?;
     let (gateway, workstation) = extract_whonix_bundle(&bundle, &dir, progress)?;
     let (gw_canon, ws_canon) = paths.whonix_bases();
+    let pair_size = fs::metadata(&gateway)?.len().checked_add(fs::metadata(&workstation)?.len())
+        .ok_or_else(|| ForgeError::Host("Whonix storage size overflow".to_owned()))?;
+    crate::paths::ensure_free_space(&paths.bases, pair_size)?;
     progress::message(progress, "Hashing Whonix qcow2 (SHA-256)");
     let gw_digest = format!("sha256:{}", hash::sha256_file(&gateway, progress)?);
     let ws_digest = format!("sha256:{}", hash::sha256_file(&workstation, progress)?);
@@ -508,45 +511,70 @@ pub fn install_base(
     Ok(dest)
 }
 
+fn immutable_install_script(src: &Path, dest: &Path, policy: crate::security::Policy) -> Result<String> {
+    let src = sh_quote(src)?;
+    let dest = sh_quote(dest)?;
+    let label = if policy == crate::security::Policy::Selinux {
+        "restorecon -F \"$tmp\""
+    } else { ":" };
+    Ok(format!(r#"set -eu
+base={dest}
+src={src}
+[ ! -L "$base" ]
+required=$(stat -c %s -- "$src")
+free=$(df -B1 --output=avail -- "$(dirname "$base")" | tail -n 1)
+[ "$free" -ge "$required" ] && [ "$((free - required))" -ge 4294967296 ] || {{
+  echo "Insufficient destination storage including the 4 GiB reserve; existing base preserved" >&2
+  exit 1
+}}
+tmp=$(mktemp "${{base}}.part.XXXXXX")
+cleanup() {{
+  status=$?
+  trap - EXIT
+  if [ -n "$tmp" ]; then
+    chattr -i "$tmp" 2>/dev/null || true
+    rm -f -- "$tmp"
+  fi
+  if [ -f "$base" ] && [ ! -L "$base" ]; then chattr +i "$base" 2>/dev/null || true; fi
+  exit "$status"
+}}
+trap cleanup EXIT
+cp --reflink=auto --sparse=always -- "$src" "$tmp"
+chown root:root "$tmp"
+chmod 0444 "$tmp"
+{label}
+sync -f "$tmp"
+if [ -e "$base" ]; then chattr -i "$base"; fi
+mv -fT -- "$tmp" "$base"
+tmp=
+chattr +i "$base"
+sync -f "$base"
+trap - EXIT
+"#))
+}
+
 fn install_immutable(paths: &ForgePaths, src: &Path, dest: &Path) -> Result<()> {
+    crate::paths::ensure_free_space(&paths.bases, fs::metadata(src)?.len())?;
     ensure_lab_storage(paths)?;
     if paths.privileged_bases {
         let policy = crate::security::Policy::for_paths(paths)?;
-        let label = if policy == crate::security::Policy::Selinux {
-            "restorecon -F"
-        } else {
-            ":"
-        };
-        let dest_s = sh_quote(dest)?;
-        let src_s = sh_quote(src)?;
-        let exists = dest.exists();
-        let unlock = if exists {
-            format!("chattr -i {dest_s}\n")
-        } else {
-            String::new()
-        };
-        // One job on the live helper — no new sudo, no password at the end.
-        let script = format!(
-            "set -eu\nbase={dest_s}\n\
-             [ ! -L {dest_s} ]\n\
-             trap 'if [ -f \"$base\" ]; then chattr +i \"$base\"; fi' EXIT\n\
-             {unlock}\
-             install -o root -g root -m 0444 {src_s} {dest_s}\n\
-             {label} {dest_s}\n\
-             chattr +i {dest_s}\ntrap - EXIT\n"
-        );
-        cmd::priv_script(&script)?;
+        cmd::priv_script(&immutable_install_script(src, dest, policy)?)?;
     } else {
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| crate::error::io_path(&err, parent, "cannot create bases dir"))?;
-        }
-        fs::copy(src, dest)?;
-        chmod(dest, 0o444)?;
-        let _ = cmd::command("chattr")
-            .args(["+i", path(dest)?])
-            .stderr(std::process::Stdio::null())
-            .status();
+        let parent = dest.parent().ok_or_else(|| ForgeError::Host("base has no parent".to_owned()))?;
+        fs::create_dir_all(parent)?;
+        let temporary = parent.join(format!(".forge-base-{}", uuid::Uuid::new_v4()));
+        fs::OpenOptions::new().create_new(true).write(true).open(&temporary)?;
+        let result: Result<()> = (|| {
+            cmd::run("cp", &["--reflink=auto", "--sparse=always", "--", path(src)?, path(&temporary)?])?;
+            chmod(&temporary, 0o444)?;
+            fs::File::open(&temporary)?.sync_all()?;
+            fs::rename(&temporary, dest)?;
+            Ok(())
+        })();
+        if result.is_err() { let _ = fs::remove_file(&temporary); }
+        result?;
+        let _ = cmd::command("chattr").args(["+i", path(dest)?])
+            .stderr(std::process::Stdio::null()).status();
     }
     Ok(())
 }
@@ -749,6 +777,50 @@ fn path(p: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn exercise_atomic_helper(fail_copy: bool) {
+        let dir = std::env::temp_dir().join(format!("forge-atomic-{}", uuid::Uuid::new_v4()));
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        for tool in ["chown", "chattr"] {
+            let shim = bin.join(tool);
+            fs::write(&shim, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        if fail_copy {
+            let shim = bin.join("cp");
+            fs::write(&shim, "#!/bin/sh\nfor target do :; done\nprintf partial > \"$target\"\nexit 1\n").unwrap();
+            fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let src = dir.join("source.qcow2");
+        let dest = dir.join("base.qcow2");
+        fs::write(&src, b"new complete image").unwrap();
+        fs::write(&dest, b"previous verified image").unwrap();
+        chmod(&dest, 0o444).unwrap();
+        let script = immutable_install_script(&src, &dest, crate::security::Policy::Apparmor).unwrap();
+        let output = std::process::Command::new("sh").args(["-c", &script])
+            .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+            .output().unwrap();
+        assert_eq!(output.status.success(), !fail_copy, "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(fs::read(&dest).unwrap(), if fail_copy {
+            b"previous verified image".as_slice()
+        } else { b"new complete image".as_slice() });
+        assert_eq!(fs::metadata(&dest).unwrap().permissions().mode() & 0o777, 0o444);
+        assert!(!fs::read_dir(&dir).unwrap().flatten()
+            .any(|entry| entry.file_name().to_string_lossy().contains(".part.")));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_immutable_copy_preserves_existing_base_and_removes_partial() {
+        exercise_atomic_helper(true);
+    }
+
+    #[test]
+    fn successful_immutable_copy_replaces_base_only_after_copy() {
+        exercise_atomic_helper(false);
+    }
     use crate::progress::noop;
 
     #[test]

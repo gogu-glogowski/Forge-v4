@@ -35,7 +35,7 @@ other immutable desktops need additional host-integration validation.
 ## AlmaLinux / Rocky Linux 10+ candidate
 
 `python3 packaging/rpm/build.py --target el10 --output /tmp/forge-el10`
-builds a separate `3.el10` RPM requiring AlmaLinux or Rocky release >=10. It does
+builds a separate `4.el10` RPM requiring AlmaLinux or Rocky release >=10. It does
 not reuse Fedora's release dependency. The same glibc >=2.39 floor applies.
 Package availability (notably Boxes, mpv and 7zip) must be checked in the enabled
 EL10 repositories; no EPEL/CRB repository is silently added. Native dependency
@@ -104,3 +104,17 @@ were checked, but cold-credential prompt counts, live audio and both hardware
 network workflows must pass independently on each distribution before readiness.
 The package dependency changes apply to future builds; already installed releases
 need mpv installed explicitly. Music can still be disabled with --no-music.
+
+
+## Storage recovery and release 4
+
+Base/overlay paths remain /var/lib/forge; cache remains in the operator's XDG data
+location. The installer displays real filesystem capacity and offers a new,
+root-owned /home/forge-storage bind mount. Existing nonempty labs require a
+verified, stopped-guest migration; the installer refuses an implicit move.
+
+Release 4 budgets logical source sizes plus a 4 GiB destination reserve, including
+both Whonix images before starting the pair copy. Sparse copying is retained.
+A failed copy removes its temporary file rather than leaving a truncated canonical
+base; a previously installed base remains intact until the final rename.
+Do not use FORGE_DATA_DIR to work around production ownership/confinement checks.
