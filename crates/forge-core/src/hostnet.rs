@@ -152,43 +152,38 @@ pub fn allow_libvirt_forward() -> Result<()> {
     if !cmd::exists("firewall-cmd") {
         return Ok(());
     }
+    // Even runtime queries can require firewalld config.info authorization.
+    // Preparation must not launch any firewall client outside its root helper.
+    if cmd::has_priv_session() {
+        return cmd::priv_script(LIBVIRT_FORWARD_SCRIPT);
+    }
     match firewall_state() {
         Firewalld::Absent | Firewalld::Stopped => return Ok(()),
         Firewalld::Running => {}
     }
-    // Lifecycle calls need the runtime policy only. Preparation's existing root
-    // session additionally checks persistence: permanent reads also require
-    // Polkit authorization on firewalld and must never run as the operator.
-    if !cmd::has_priv_session() && libvirt_forwards() == Some(true) {
-        return Ok(());
-    }
     // Mutations must share prepare's authenticated helper. Direct firewall-cmd
     // writes cause an independent Polkit prompt for every prepared profile.
-    cmd::priv_script(LIBVIRT_FORWARD_SCRIPT)?;
-    if libvirt_forwards() != Some(true) {
-        return Err(ForgeError::Host(
-            "firewalld zone libvirt still does not forward; the gateway cannot reach the router"
-                .to_owned(),
-        ));
-    }
-    Ok(())
+    cmd::priv_script(LIBVIRT_FORWARD_SCRIPT)
 }
 
 #[must_use]
 pub fn libvirt_forwards() -> Option<bool> {
-    let output = cmd::command("firewall-cmd")
-        .args(["--zone=libvirt", "--query-forward"])
-        .output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    match (output.status.success(), text.trim()) {
-        (true, "yes") => Some(true),
-        (false, "no") => Some(false),
-        _ => None,
-    }
+    // A read-only doctor must not trigger authentication. Firewalld's config.info
+    // policy protects runtime inspection too; service-side authorization may
+    // request interaction despite a caller's D-Bus no-interaction flag.
+    // Setup/preparation verifies the live state inside LIBVIRT_FORWARD_SCRIPT.
+    None
 }
 
 const LIBVIRT_FORWARD_SCRIPT: &str = r#"
 set -eu
+if firewall-cmd --state >/dev/null 2>&1; then
+    :
+else
+    status=$?
+    [ "$status" -eq 252 ] && exit 0
+    exit "$status"
+fi
 if ! firewall-cmd --zone=libvirt --query-forward >/dev/null; then
     firewall-cmd --zone=libvirt --add-forward >/dev/null
 fi
@@ -462,16 +457,14 @@ enum Firewalld {
 }
 
 fn firewall_state() -> Firewalld {
-    let Ok(output) = cmd::command("firewall-cmd").arg("--state").output() else {
+    let Ok(output) = cmd::command("busctl")
+        .args(["--system", "--allow-interactive-authorization=no", "call",
+            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+            "NameHasOwner", "s", "org.fedoraproject.FirewallD1"])
+        .output() else {
         return Firewalld::Absent;
     };
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-    .to_ascii_lowercase();
-    if text.contains("running") && !text.contains("not running") {
+    if output.status.success() && cmd::stdout(&output) == "b true" {
         Firewalld::Running
     } else {
         Firewalld::Stopped
@@ -957,6 +950,7 @@ mod tests {
 kind=runtime
 case " $* " in *' --permanent '*) kind=permanent;; esac
 case " $* " in
+  *' --state '*) exit 0;;
   *' --query-forward '*) test -f "$STATE/$kind";;
   *' --add-forward '*)
     test "${FAIL_WRITE:-0}" = 0 || exit 7
