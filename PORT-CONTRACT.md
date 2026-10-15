@@ -29,6 +29,38 @@ entire CLI as root, disabling Polkit or adding global passwordless sudo. Protect
 firewall inspection belongs in the helper too. Noninteractive installation needs
 explicit choices or documented preservation of the existing configuration.
 
+## All installer combinations are mandatory
+
+| Music | Network | Required result |
+| --- | --- | --- |
+| On | Standard | Audible preparation music, native dependencies, verified guests, host NAT, active Forge hook |
+| Off | Standard | No playback process/audio, otherwise the same complete Standard installation |
+| On | Dedicated A/B | Audible music, complete dependencies/guests, A/B network configuration and required USB/network hook integration |
+| Off | Dedicated A/B | No playback, otherwise the same complete Dedicated installation |
+
+Music choice must never change dependency completeness, confinement, guest roles,
+network configuration or hook coverage. Every combination requires its own native
+acceptance test on each supported distribution, including one initial sudo
+authentication and no additional sudo/Polkit prompts during the whole operation.
+
+Resolve prerequisites from the actual distro/package metadata and project code,
+not assumptions from earlier conversations. Native binary installs need runtime
+dependencies; Rust, Python and other build tools are installed when the selected
+distribution workflow actually builds or uses them, not indiscriminately.
+
+The installer prepares four VMs for the current no-SIFT selection: Tsurugi, Kali,
+Whonix Gateway and Whonix Workstation. Whonix is one profile with two guests.
+SIFT remains an explicitly supplied licensed local OVA, never an invented download.
+Download/verify/configure guests in the selected network mode within the installer.
+
+Install and activate required root hooks automatically before declaring success;
+the user must not need a separate `forge dev hook`. The QEMU security/role/digest
+hook is required in BOTH modes and must cover starts from Boxes, virsh and Forge.
+Dedicated additionally needs its A/B ownership and network integration. Preserve
+safe ordering: all guests off for hook updates, hooks in place before any guest
+can start, no nested virsh calls inside the synchronous QEMU hook. Never defer
+security hooks until after permitting an unguarded start.
+
 ## Concurrent guests
 
 Standard must permit concurrent Kali, Tsurugi and Whonix where resources allow;

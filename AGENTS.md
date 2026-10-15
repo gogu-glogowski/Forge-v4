@@ -29,6 +29,13 @@ installation instructions and validation status in each distribution's guide.
   automatically give every guest all host RAM/CPUs.
 - Dedicated retains exclusive ownership rules where the shared USB uplink B
   requires them. Never relax those rules merely to match Standard concurrency.
+- Test all four music on/off × Standard/Dedicated combinations on every port.
+  Music selection must not omit dependencies, guests, confinement or hooks.
+- Automatically install/activate the required QEMU hook in both modes and the
+  additional Dedicated A/B integration, with guests stopped and before any start.
+  No separate manual dev-hook step in a completed installer. Cover Boxes/virsh
+  starts too. The current no-SIFT selection means four VMs from three profiles:
+  Tsurugi, Kali, Whonix Gateway and Whonix Workstation.
 
 ## One authentication per operation
 
