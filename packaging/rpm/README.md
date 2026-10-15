@@ -81,7 +81,7 @@ be used only after building/testing that same verified source for AlmaLinux.
 The RPM preserves translations, help, desktop metadata, schema and license.
 It does not start services, configure networks or alter Forge guests.
 
-After installation, use `forge doctor`, then configure libvirt access and SELinux
+After installation, use `forge dev doctor`, then configure libvirt access and SELinux
 as instructed by diagnostics. With guests stopped, `forge setup --network standard`
 creates the Boxes QEMU System source. Open native `gnome-boxes` and verify that
 Forge guests appear under that connection. The `port readiness` failure is retained
