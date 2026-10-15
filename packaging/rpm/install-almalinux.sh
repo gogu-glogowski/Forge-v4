@@ -30,26 +30,12 @@ while true; do
   esac
 done
 echo "Wybrano: $mode. Forge setup wymaga zatrzymania wszystkich maszyn."
-# Shared helper is shipped beside this script in release bundles.
-hostname_helper="$here/hostname-choice.sh"
-[[ -f "$hostname_helper" ]] || hostname_helper="$here/../common/hostname-choice.sh"
-[[ -f "$hostname_helper" ]] || { echo 'Brak modułu wyboru hostname; instalacja przerwana.' >&2; exit 1; }
-source "$hostname_helper"
-forge_choose_hostname
 (cd "$here" && sha256sum -c SHA256SUMS)
 rpm -K "$here/libvirt-gconfig-5.0.0-4.el10.x86_64.rpm" "$here/libvirt-gobject-5.0.0-4.el10.x86_64.rpm"
-# One bounded privileged invocation for packages and the optional hostname.
-sudo bash -s -- "$here" "$FORGE_HOSTNAME_ACTION" "$FORGE_TRANSIENT_HOSTNAME" <<'FORGE_INSTALL_ROOT'
+# One bounded privileged invocation for package installation only.
+sudo bash -s -- "$here" <<'FORGE_INSTALL_ROOT'
 set -Eeuo pipefail
 bundle=$1
-hostname_action=$2
-hostname_name=$3
-case "$hostname_action" in
-  keep) [[ -z "$hostname_name" ]] || exit 1 ;;
-  transient)
-    [[ ${#hostname_name} -le 63 && "$hostname_name" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || exit 1 ;;
-  *) exit 1 ;;
-esac
 if ! rpm -q epel-release >/dev/null 2>&1; then
   dnf install epel-release
 fi
@@ -58,9 +44,6 @@ dnf --enablerepo=crb --enablerepo=epel --setopt=install_weak_deps=False install 
   "$bundle/libvirt-gobject-5.0.0-4.el10.x86_64.rpm" \
   "$bundle/gnome-boxes-50.0-1.el10.x86_64.rpm" \
   "$bundle/forge-4.2.0-2.el10.x86_64.rpm" mpv
-if [[ "$hostname_action" == transient ]]; then
-  hostnamectl --transient set-hostname "$hostname_name"
-fi
 FORGE_INSTALL_ROOT
 rpm -q gnome-boxes forge libvirt-gconfig libvirt-gobject
 /usr/bin/gnome-boxes --version
