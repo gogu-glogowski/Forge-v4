@@ -45,7 +45,7 @@ def main():
             archive.add(payload, arcname=payload.name)
         spec = (REPO / 'packaging/rpm/forge.spec.in').read_text().replace('@VERSION@', version)
         if args.target == 'el10':
-            spec = spec.replace('Release:        1%{?dist}', 'Release:        5.el10').replace('Requires:       fedora-release >= 44', 'Requires:       (almalinux-release >= 10 or rocky-release >= 10)')
+            spec = spec.replace('Release:        1%{?dist}', 'Release:        6.el10').replace('Requires:       fedora-release >= 44', 'Requires:       (almalinux-release >= 10 or rocky-release >= 10)')
         path = top / 'SPECS/forge.spec'
         path.write_text(spec)
         subprocess.run(['rpmbuild', '-bb', '--define', f'_topdir {top}', '--define', f'_dbpath {top}/rpmdb', '--define', f'_tmppath {top}/tmp', str(path)], check=True)

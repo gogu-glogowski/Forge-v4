@@ -156,13 +156,16 @@ pub fn allow_libvirt_forward() -> Result<()> {
         Firewalld::Absent | Firewalld::Stopped => return Ok(()),
         Firewalld::Running => {}
     }
-    if libvirt_forwards() == Some(true) && libvirt_forward_query(true) == Some(true) {
+    // Lifecycle calls need the runtime policy only. Preparation's existing root
+    // session additionally checks persistence: permanent reads also require
+    // Polkit authorization on firewalld and must never run as the operator.
+    if !cmd::has_priv_session() && libvirt_forwards() == Some(true) {
         return Ok(());
     }
     // Mutations must share prepare's authenticated helper. Direct firewall-cmd
     // writes cause an independent Polkit prompt for every prepared profile.
     cmd::priv_script(LIBVIRT_FORWARD_SCRIPT)?;
-    if libvirt_forwards() != Some(true) || libvirt_forward_query(true) != Some(true) {
+    if libvirt_forwards() != Some(true) {
         return Err(ForgeError::Host(
             "firewalld zone libvirt still does not forward; the gateway cannot reach the router"
                 .to_owned(),
@@ -173,7 +176,15 @@ pub fn allow_libvirt_forward() -> Result<()> {
 
 #[must_use]
 pub fn libvirt_forwards() -> Option<bool> {
-    libvirt_forward_query(false)
+    let output = cmd::command("firewall-cmd")
+        .args(["--zone=libvirt", "--query-forward"])
+        .output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    match (output.status.success(), text.trim()) {
+        (true, "yes") => Some(true),
+        (false, "no") => Some(false),
+        _ => None,
+    }
 }
 
 const LIBVIRT_FORWARD_SCRIPT: &str = r#"
@@ -187,26 +198,6 @@ fi
 firewall-cmd --zone=libvirt --query-forward >/dev/null
 firewall-cmd --permanent --zone=libvirt --query-forward >/dev/null
 "#;
-
-fn libvirt_forward_query(permanent: bool) -> Option<bool> {
-    let mut command = cmd::command("firewall-cmd");
-    if permanent {
-        command.arg("--permanent");
-    }
-    let output = command.args(["--zone=libvirt", "--query-forward"]).output().ok()?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    if text.to_ascii_lowercase().contains("yes") {
-        Some(true)
-    } else if text.to_ascii_lowercase().contains("no") {
-        Some(false)
-    } else {
-        None
-    }
-}
 
 /// Table 100 already sends the gateway range out this USB NIC, and that NIC
 /// is not Fedora's default route.
