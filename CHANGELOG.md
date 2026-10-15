@@ -1,3 +1,8 @@
+## EL10 RPM release 3 (4.2.0-3.el10)
+
+- Accept libvirt's default NAT port range in network validation for forge-standard and forge-wan.
+- Continue rejecting custom NAT addresses, port ranges, pinned uplinks and routed forwarding.
+
 ## AlmaLinux 10 native Boxes candidate (2026-10-15)
 
 - Add a builder for GNOME Boxes 50.0 using verified upstream source and AlmaLinux libraries.

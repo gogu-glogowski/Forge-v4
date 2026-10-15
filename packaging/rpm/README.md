@@ -35,7 +35,7 @@ other immutable desktops need additional host-integration validation.
 ## AlmaLinux / Rocky Linux 10+ candidate
 
 `python3 packaging/rpm/build.py --target el10 --output /tmp/forge-el10`
-builds a separate `2.el10` RPM requiring AlmaLinux or Rocky release >=10. It does
+builds a separate `3.el10` RPM requiring AlmaLinux or Rocky release >=10. It does
 not reuse Fedora's release dependency. The same glibc >=2.39 floor applies.
 Package availability (notably Boxes, mpv and 7zip) must be checked in the enabled
 EL10 repositories; no EPEL/CRB repository is silently added. Native dependency
@@ -86,3 +86,5 @@ as instructed by diagnostics. With guests stopped, `forge setup --network standa
 creates the Boxes QEMU System source. Open native `gnome-boxes` and verify that
 Forge guests appear under that connection. The `port readiness` failure is retained
 until a physical start/stop and confinement audit is completed.
+
+EL10 release 3 accepts libvirt's canonical NAT port range 1024–65535 in network diagnostics; custom NAT ranges, addresses and pinned uplinks remain rejected.

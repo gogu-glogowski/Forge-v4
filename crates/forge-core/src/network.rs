@@ -220,7 +220,7 @@ pub fn standard_nat_ok(xml: &str, name: &str) -> bool {
         && forwards.len() == 1
         && forwards[0].attribute("mode") == Some("nat")
         && forwards[0].attribute("dev").is_none()
-        && !forwards[0].children().any(|n| n.is_element())
+        && default_nat_options_ok(forwards[0])
         && ips.len() == 1
         && ips[0].attribute("address") == Some(expected_ip)
         && ips[0].attribute("netmask") == Some("255.255.255.0")
@@ -229,6 +229,27 @@ pub fn standard_nat_ok(xml: &str, name: &str) -> bool {
         && !root
             .children()
             .any(|n| matches!(n.tag_name().name(), "route" | "virtualport" | "portgroup"))
+}
+
+// libvirt expands an empty NAT forward into this default port range on dumpxml.
+// Accept only that canonical form, not pinned addresses or custom NAT options.
+fn default_nat_options_ok(forward: roxmltree::Node<'_, '_>) -> bool {
+    let children: Vec<_> = forward.children().filter(|n| n.is_element()).collect();
+    if children.is_empty() {
+        return true;
+    }
+    if children.len() != 1 || !children[0].has_tag_name("nat")
+        || children[0].attributes().len() != 0
+    {
+        return false;
+    }
+    let ports: Vec<_> = children[0].children().filter(|n| n.is_element()).collect();
+    ports.len() == 1
+        && ports[0].has_tag_name("port")
+        && ports[0].attributes().len() == 2
+        && ports[0].attribute("start") == Some("1024")
+        && ports[0].attribute("end") == Some("65535")
+        && !ports[0].children().any(|n| n.is_element())
 }
 
 pub fn private_ok(xml: &str) -> bool {
@@ -281,6 +302,29 @@ mod tests {
                 ),
                 name
             ));
+        }
+    }
+    #[test]
+    fn libvirt_default_nat_dumpxml_is_accepted_without_custom_options() {
+        for name in [STANDARD_NET, WAN_NET] {
+            let xml = standard_nat_xml(name).replace(
+                "<forward mode='nat'/>",
+                "<forward mode='nat'><nat><port start='1024' end='65535'/></nat></forward>",
+            );
+            assert!(standard_nat_ok(&xml, name));
+            for changed in [
+                xml.replace("start='1024'", "start='1'"),
+                xml.replace("end='65535'", "end='60000'"),
+                xml.replace("<nat>", "<nat ipv6='yes'>"),
+                xml.replace("</nat>", "<address start='192.0.2.1' end='192.0.2.1'/></nat>"),
+                xml.replace("</nat>", "<port start='1024' end='65535'/></nat>"),
+                xml.replace("</forward>", "<nat><port start='1024' end='65535'/></nat></forward>"),
+                xml.replace("mode='nat'", "mode='nat' dev='eth0'"),
+                xml.replace("mode='nat'", "mode='route'"),
+                xml.replace("end='65535'", "end='65535' extra='true'"),
+            ] {
+                assert!(!standard_nat_ok(&changed, name), "accepted custom policy: {changed}");
+            }
         }
     }
     #[test]
