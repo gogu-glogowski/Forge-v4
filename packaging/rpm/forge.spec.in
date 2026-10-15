@@ -11,7 +11,7 @@ Requires:       qemu-kvm qemu-img libvirt-client libvirt-daemon-kvm gnome-boxes
 Requires:       gnupg2 curl ca-certificates 7zip tar xz e2fsprogs
 Requires:       NetworkManager iproute procps-ng psmisc systemd sudo coreutils util-linux
 Requires:       policycoreutils policycoreutils-python-utils libselinux-utils selinux-policy-targeted
-Recommends:     mpv
+Requires:       mpv
 
 # The payload is a release binary, already built by packaging/rpm/build.py.
 # No services, hooks, user groups or VM data are changed by RPM scriptlets.
@@ -19,7 +19,7 @@ Recommends:     mpv
 Forge manages verified immutable VM bases, writable overlays and libvirt policies.
 New labs use Standard NAT; Dedicated A/B hardware support remains experimental.
 Run forge setup as the normal user with guests stopped to activate the root hook.
-Music streams online through optional mpv; MP3 payloads are not included.
+Music streams online through mpv; MP3 payloads are not included.
 
 %prep
 %setup -q -n forge-%{version}-payload

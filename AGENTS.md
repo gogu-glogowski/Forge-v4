@@ -29,3 +29,35 @@ prepares the images correctly. Do not mark it fully ready until this is fixed an
 verified. Commit and PR descriptions for port work must explicitly report the
 authentication behavior and whether this acceptance check passed, failed or
 remains unverified. Documenting this rule alone does not implement the fix.
+
+## Full feature parity and explicit network choice
+
+Every port must implement and configure the complete current project contract,
+not merely install a binary. The main README and the network/role/security code
+are the reference; review them before porting and report any gap explicitly.
+
+- Keep native GNOME Boxes connected to qemu:///system, libvirt/KVM, the appropriate
+  host confinement, groups/access, storage ownership/labels, hook and network policy.
+- Install music playback dependencies by default and verify actual audible playback
+  during preparation. Music is part of the complete experience, not a dependency
+  that may disappear with disabled weak/recommended packages. Explicit --no-music
+  remains supported; playback failure must not break image verification/preparation.
+- The user-facing installer must ask which network mode to configure before making
+  network changes. Do not assume Standard silently. Default to Standard for a NEW
+  lab; show and preserve the existing mode as the default on an existing lab.
+- Standard uses the host connection through libvirt NAT for Kali and Whonix Gateway
+  and requires no extra hardware.
+- Dedicated is advanced: host uses interface A; guest internet uses USB Ethernet B.
+  Separate interfaces/cables are required, not necessarily different providers.
+- Apply the selected mode through Forge setup, with guests stopped. Preserve the
+  project's isolated roles and Whonix Workstation-to-Gateway-only topology.
+- Implement the selection in the interactive installer/configuration entrypoint,
+  not blocking package-manager scriptlets without a terminal. Noninteractive
+  installers must receive an explicit mode (or preserve an existing configured mode).
+- A plain package-manager install is not evidence of full configuration. Document
+  its remaining configuration entrypoint rather than claiming the port is complete.
+
+Validate EACH distribution separately: authentication count, installer selection
+and preservation of mode, both network modes, music/audio, Boxes, image verification,
+storage, VM start/stop and effective confinement. A test/build on another distro
+is not a substitute. Do not weaken or omit project requirements to make a port pass.

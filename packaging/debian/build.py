@@ -77,8 +77,8 @@ def main():
         doc.joinpath('changelog.gz').write_bytes(gzip.compress((REPO / 'CHANGELOG.md').read_bytes(), mtime=0))
         for name in ['CREDITS.md', 'LICENSE-CC-BY-4.0.txt', 'manifest.json']:
             copy(REPO / 'assets/music' / name, tree / 'usr/share/forge/music' / name)
-        dependencies = shared + ', qemu-system-x86, qemu-utils, libvirt-clients, libvirt-daemon-system, gnome-boxes, apparmor, gnupg, curl, ca-certificates, 7zip | p7zip-full, tar, xz-utils, e2fsprogs, network-manager, iproute2, procps, psmisc, systemd, sudo'
-        build_tree(tree, 'forge', debversion, arch, dependencies, 'mpv',
+        dependencies = shared + ', qemu-system-x86, qemu-utils, libvirt-clients, libvirt-daemon-system, gnome-boxes, apparmor, gnupg, curl, ca-certificates, 7zip | p7zip-full, tar, xz-utils, e2fsprogs, network-manager, iproute2, procps, psmisc, systemd, sudo, mpv'
+        build_tree(tree, 'forge', debversion, arch, dependencies, None,
                    'Verified KVM lab with GNOME Boxes integration\n Immutable bases, writable overlays, libvirt hooks and Standard NAT.\n Dedicated A/B hardware support remains experimental. Run as a normal user.\n Setup is explicit; installation does not change networks or running guests.')
         target = output / f'forge_{debversion}_{arch}.deb'
         subprocess.run(['dpkg-deb', '--root-owner-group', '-Zxz', '-z1', '--build', str(tree), str(target)], check=True)

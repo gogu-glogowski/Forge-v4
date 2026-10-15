@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix='forge-xbps-') as tmp:
  for name in ['CREDITS.md','LICENSE-CC-BY-4.0.txt','manifest.json']:
   d=root/'usr/share/forge/music'/name;d.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(REPO/'assets/music'/name,d)
  d=root/'usr/share/licenses/forge/LICENSE';d.parent.mkdir(parents=True);shutil.copyfile(REPO/'LICENSE',d)
- deps='glibc>=2.39 libgcc qemu libvirt gnome-boxes NetworkManager gnupg curl ca-certificates 7zip tar xz e2fsprogs iproute2 procps-ng psmisc runit sudo coreutils util-linux apparmor'
+ deps='glibc>=2.39 libgcc qemu libvirt gnome-boxes NetworkManager gnupg curl ca-certificates 7zip tar xz e2fsprogs iproute2 procps-ng psmisc runit sudo coreutils util-linux apparmor mpv'
  deps=' '.join(n if '>=' in n else n+'>=0' for n in deps.split())
  subprocess.run(['xbps-create','-A','x86_64','-n',f'forge-{v}_1','-s','Verified KVM lab (experimental Void glibc port)','-l','Apache-2.0, CC-BY-4.0','-D',deps,str(root)],cwd=out,check=True)
  files=list(out.glob(f'forge-{v}_1.x86_64.xbps'));assert len(files)==1

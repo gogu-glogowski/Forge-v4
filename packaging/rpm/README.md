@@ -20,7 +20,7 @@ Enable the existing modular libvirt sockets as described in the main README,
 join libvirt/kvm groups and log out/in. With guests stopped, run `/usr/bin/forge setup`,
 then `/usr/bin/forge prepare --all` as the normal user. SELinux remains enforcing.
 MP3s stream from the Forge repository; credits/license are packaged locally.
-`mpv` is recommended, and music failures never stop image preparation.
+`mpv` is a required package dependency, and music failures never stop image preparation.
 
 The RPM has no installation/removal scriptlets. It does not modify networks,
 activate a hook, restart libvirt or start/stop guests. Remove/purge leaves the lab,
@@ -88,3 +88,19 @@ Forge guests appear under that connection. The `port readiness` failure is retai
 until a physical start/stop and confinement audit is completed.
 
 EL10 release 3 accepts libvirt's canonical NAT port range 1024–65535 in network diagnostics; custom NAT ranges, addresses and pinned uplinks remain rejected.
+
+## Complete installer contract
+
+All ports follow AGENTS.md: full configuration, music playback dependencies,
+explicit Standard/Dedicated selection, and at most one authentication per operation.
+The AlmaLinux bundle entrypoint is `bash install-almalinux.sh` with the four RPMs
+and SHA256SUMS alongside it. It asks for the mode, preserves an existing lab mode
+as the default, explicitly installs mpv, and runs Forge setup for the selection.
+Direct `dnf install` cannot offer the interactive selection; use the bundle
+entrypoint or perform explicit setup afterwards.
+
+The per-image authentication bug remains open. Shell syntax and dependency edits
+were checked, but cold-credential prompt counts, live audio and both hardware
+network workflows must pass independently on each distribution before readiness.
+The package dependency changes apply to future builds; already installed releases
+need mpv installed explicitly. Music can still be disabled with --no-music.
