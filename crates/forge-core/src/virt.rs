@@ -19,6 +19,7 @@ pub fn uri() -> Result<String> {
 }
 
 pub fn try_connect(uri: &str) -> Result<String> {
+    if cmd::has_priv_session() { return virsh(uri, &["uri"]); }
     let output = command("virsh")
         .args(["-c", uri, "uri"])
         .output()
@@ -33,6 +34,11 @@ pub fn try_connect(uri: &str) -> Result<String> {
 pub fn virsh(uri: &str, args: &[&str]) -> Result<String> {
     let mut all = vec!["-c", uri];
     all.extend_from_slice(args);
+    if cmd::has_priv_session() {
+        let arguments = all.iter().map(|arg| cmd::shell_quote(arg)).collect::<Vec<_>>().join(" ");
+        return cmd::priv_capture(&format!("LC_ALL=C virsh {arguments} 2>&1"))
+            .map_err(|error| ForgeError::Virt(error.to_string()));
+    }
     let output = command("virsh")
         .args(&all)
         .output()

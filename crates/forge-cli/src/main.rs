@@ -1,4 +1,5 @@
 mod music;
+mod install;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -23,6 +24,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Complete AlmaLinux bundle installation and preparation
+    Install { #[arg(long)] bundle: std::path::PathBuf },
     /// Configure Standard NAT (default for new labs) or a Dedicated A/B network
     Setup {
         #[arg(long, value_parser = ["standard", "dedicated"])]
@@ -150,6 +153,7 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
         ));
     }
     match cli.command {
+        Commands::Install { bundle } => install::run(&bundle),
         Commands::Setup { network } => {
             let forge = Forge::open()?;
             let mode = forge.setup_network(network.as_deref().map(str::parse).transpose()?)?;

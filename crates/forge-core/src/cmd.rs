@@ -95,10 +95,15 @@ while IFS= read -r hdr; do
     [ "$line" = "FORGE_END" ] && break
     printf '%s\n' "$line" >> "$tmp"
   done
-  if /bin/sh "$tmp"; then
+  out=$(mktemp /tmp/forge-output.XXXXXX) || exit 1
+  status=0
+  /bin/sh "$tmp" >"$out" || status=$?
+  od -An -v -tx1 "$out" | while IFS= read -r data; do printf 'FORGE_PRIV_DATA %s\n' "$data"; done
+  rm -f "$out"
+  if [ "$status" -eq 0 ]; then
     printf '%s\n' FORGE_PRIV_OK
   else
-    printf '%s\n' "FORGE_PRIV_ERR $?"
+    printf '%s\n' "FORGE_PRIV_ERR $status"
   fi
   rm -f "$tmp"
 done
@@ -149,6 +154,10 @@ impl SudoSession {
     }
 
     pub fn run_script(&self, script: &str) -> Result<()> {
+        self.run_capture(script).map(|_| ())
+    }
+
+    fn run_capture(&self, script: &str) -> Result<String> {
         validate_job_script(script)?;
         let mut stdin = self
             .stdin
@@ -164,17 +173,21 @@ impl SudoSession {
         }
         writeln!(stdin, "FORGE_END").map_err(|e| ForgeError::Host(e.to_string()))?;
         stdin.flush().map_err(|e| ForgeError::Host(e.to_string()))?;
-        let mut line = String::new();
-        stdout
-            .read_line(&mut line)
-            .map_err(|e| ForgeError::Host(e.to_string()))?;
-        let line = line.trim();
-        if line == "FORGE_PRIV_OK" {
-            Ok(())
-        } else {
-            Err(ForgeError::Host(format!(
-                "privileged helper failed: {line}"
-            )))
+        let mut bytes = Vec::new();
+        loop {
+            let mut line = String::new();
+            if stdout.read_line(&mut line).map_err(|e| ForgeError::Host(e.to_string()))? == 0 {
+                return Err(ForgeError::Host("privileged helper closed unexpectedly".to_owned()));
+            }
+            let line = line.trim();
+            if let Some(data) = line.strip_prefix("FORGE_PRIV_DATA ") {
+                let data: String = data.split_whitespace().collect();
+                bytes.extend(hex::decode(data).map_err(|e| ForgeError::Host(e.to_string()))?);
+            } else if line == "FORGE_PRIV_OK" {
+                return Ok(String::from_utf8_lossy(&bytes).trim().to_owned());
+            } else {
+                return Err(ForgeError::Host(format!("privileged helper failed: {line}: {}", String::from_utf8_lossy(&bytes))));
+            }
         }
     }
 }
@@ -260,10 +273,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn helper_frames_output_and_reuses_session_after_failure() {
+        let mut child = command("/bin/sh").args(["-c", HELPER])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new(); stdout.read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim(), "FORGE_PRIV_READY");
+        let session = SudoSession { child, stdin: Mutex::new(stdin), stdout: Mutex::new(stdout) };
+        assert_eq!(session.run_capture("printf 'FORGE_PRIV_OK\\nhello\\n'").unwrap(), "FORGE_PRIV_OK\nhello");
+        assert!(session.run_capture("printf 'failure details'; exit 7").unwrap_err().to_string().contains("failure details"));
+        assert_eq!(session.run_capture("printf 'next job'").unwrap(), "next job");
+    }
+
+    #[test]
     fn job_script_rejects_protocol_tokens() {
         assert!(validate_job_script("chattr +i /x").is_ok());
         assert!(validate_job_script("echo FORGE_END").is_ok());
         assert!(validate_job_script("FORGE_END").is_err());
         assert!(validate_job_script("QUIT").is_err());
     }
+}
+
+/// Shell quoting for trusted command names and arbitrary argument strings.
+pub(crate) fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+pub(crate) fn priv_capture(script: &str) -> Result<String> {
+    validate_job_script(script)?;
+    PRIV.with(|slot| slot.borrow().as_ref()
+        .ok_or_else(|| ForgeError::Host("authenticated session required".to_owned()))?
+        .run_capture(script))
+}
+
+/// Keep one authenticated helper alive for an entire installation workflow.
+pub fn authenticated<T>(body: impl FnOnce() -> Result<T>) -> Result<T> {
+    if has_priv_session() { body() } else { scope_priv(SudoSession::start()?, body) }
 }

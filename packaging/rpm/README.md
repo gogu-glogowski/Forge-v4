@@ -1,3 +1,6 @@
+For the integrated AlmaLinux installer, use [the dedicated guide](ALMALINUX.md).
+Older AlmaLinux manual/package-only instructions below are historical.
+
 # Fedora RPM
 
 Target installer experience: [shared port contract](../../PORT-CONTRACT.md).

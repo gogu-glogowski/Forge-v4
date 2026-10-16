@@ -72,9 +72,9 @@ Audit CLI, root hooks, Boxes starts, network policy, docs and tests together.
 
 ## Current gaps and acceptance
 
-- Current AlmaLinux installer is an incomplete candidate: music-first flow,
-  prerequisite orchestration, integrated preparation and one authentication across
-  package install + preparation still require implementation and native validation.
+- AlmaLinux revision 9 implements the integrated candidate flow in Rust with a
+  thin bundle entrypoint. Full native four-combination authentication/network/audio
+  acceptance is pending; other distribution adapters remain to be implemented.
 - Audit/update each distro-specific guide and entrypoint separately; keep the
   central README largely intact. Never imply untested distributions are ready.
 - Test new installation and upgrade, preserving data/mode/identity; music on/off;
