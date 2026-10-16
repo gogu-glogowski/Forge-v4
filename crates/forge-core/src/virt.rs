@@ -19,19 +19,31 @@ pub fn uri() -> Result<String> {
 }
 
 pub fn try_connect(uri: &str) -> Result<String> {
-    if cmd::has_priv_session() { return virsh(uri, &["uri"]); }
-    let output = command("virsh")
-        .args(["-c", uri, "uri"])
-        .output()
-        .map_err(|error| ForgeError::Virt(format!("cannot run virsh: {error}")))?;
-    if output.status.success() {
-        Ok(cmd::stdout(&output))
-    } else {
-        Err(ForgeError::Virt(cmd::stdout_or_stderr(&output)))
-    }
+    virsh(uri, &["uri"])
 }
 
 pub fn virsh(uri: &str, args: &[&str]) -> Result<String> {
+    retry_read(args, || virsh_once(uri, args))
+}
+
+fn retry_read(args: &[&str], mut operation: impl FnMut() -> Result<String>) -> Result<String> {
+    let safe = matches!(args.first().copied(), Some("uri" | "list" | "domstate" | "dumpxml" | "net-list" | "net-dumpxml" | "net-info" | "pool-info" | "capabilities"));
+    for attempt in 0..3 {
+        match operation() {
+            Err(error) if safe && attempt < 2 && transient_disconnect(&error.to_string()) => {
+                std::thread::sleep(std::time::Duration::from_millis(250 * (attempt + 1)));
+            }
+            result => return result,
+        }
+    }
+    unreachable!()
+}
+
+fn transient_disconnect(error: &str) -> bool {
+    error.contains("Connection reset by peer") || error.contains("End of file while reading data")
+}
+
+fn virsh_once(uri: &str, args: &[&str]) -> Result<String> {
     let mut all = vec!["-c", uri];
     all.extend_from_slice(args);
     if cmd::has_priv_session() {
@@ -434,5 +446,32 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("forge-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+    #[test]
+    fn idle_disconnect_retries_reads_but_never_mutations() {
+        for command in ["domstate", "dumpxml", "net-info", "start", "destroy", "define"] {
+            let mut calls = 0;
+            let result = retry_read(&[command], || {
+                calls += 1;
+                if calls == 1 { Err(ForgeError::Virt("Connection reset by peer".to_owned())) }
+                else { Ok("ok".to_owned()) }
+            });
+            let read = matches!(command, "domstate" | "dumpxml" | "net-info");
+            assert_eq!(result.is_ok(), read);
+            assert_eq!(calls, if read { 2 } else { 1 });
+        }
+    }
+    #[test]
+    fn reconnect_is_bounded_and_does_not_retry_policy_errors() {
+        for message in ["Connection reset by peer", "permission denied"] {
+            let mut calls = 0;
+            assert!(retry_read(&["list"], || { calls += 1; Err(ForgeError::Virt(message.to_owned())) }).is_err());
+            assert_eq!(calls, if message == "permission denied" { 1 } else { 3 });
+        }
     }
 }

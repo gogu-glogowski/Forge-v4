@@ -84,3 +84,15 @@ Audit CLI, root hooks, Boxes starts, network policy, docs and tests together.
 - AlmaLinux bug: the hook recognized only qemu-system process names, while EL10
   uses /usr/libexec/qemu-kvm. Gateway was running but Workstation was denied as
   if it were off. Fix process detection without removing the Gateway requirement.
+
+## Deferred private variant — after public ports
+
+Owner request recorded 2026-10-16: later create a separate private variant with
+strict independent-uplink requirements for A/B and fail-closed guest internet
+when independence cannot be established. Private repository/location is not yet
+chosen; do not create one or enable this policy now. Public Dedicated continues
+to allow separate interfaces/cables on the same provider/router.
+Two cables, different addresses/subnets or different public IPs do not by
+themselves prove different providers or independent physical paths. Define
+credible evidence and tests before claiming this stronger property. Keep this
+future policy separate from current public port acceptance and default behavior.

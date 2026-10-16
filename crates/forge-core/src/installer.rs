@@ -28,11 +28,22 @@ pub fn run(
         }
         cmd::priv_script(&prerequisites_script(bundle, &operator, uid))?;
         let (mode, home_storage) = choose()?;
+        let links = if mode == NetworkMode::Dedicated { Some(check_dedicated_links()?) } else { None };
         if home_storage { cmd::priv_script(HOME_STORAGE)?; }
         cmd::priv_script(&format!("set -eu\ncd {}\nsha256sum -c SHA256SUMS >&2\ndnf -y --enablerepo=crb --enablerepo=epel --setopt=install_weak_deps=False install ./forge-*.rpm >&2\n", cmd::shell_quote(bundle)))?;
         let forge = Forge::open()?;
         forge.setup_network(Some(mode))?;
         let report = forge.prepare_all(None, progress)?;
+        if let Some((a, b)) = links {
+            eprintln!("Dedicated: host A={a}; guest uplink B={b}. Applying existing Forge ownership policy.");
+            eprintln!("{}", forge.enforce_cables()?);
+            let router = crate::hostnet::lease_usb(&b)?;
+            crate::virt::ensure_wan_net(&forge.uri, Some(&b))?;
+            if !crate::hostnet::usb_lease_current(&b) {
+                return Err(ForgeError::Host("Dedicated B policy/lease verification failed".to_owned()));
+            }
+            eprintln!("B DHCP/router {router} and policy routing verified. Guest internet/separation still requires VM tests.");
+        }
         // Authenticated firewall and hook/network checks are performed by setup.
         // Domain metadata and power state are checked without starting guests.
         for vm in forge.status(None)? {
@@ -84,3 +95,7 @@ mount --bind /home/forge-storage /var/lib/forge
 printf '\n/home/forge-storage /var/lib/forge none bind,x-systemd.requires-mounts-for=/home/forge-storage 0 0\n' >> /etc/fstab
 systemctl daemon-reload
 "#;
+
+pub fn check_dedicated_links() -> Result<(String, String)> {
+    crate::hostnet::dedicated_links()
+}

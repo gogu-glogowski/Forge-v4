@@ -1,6 +1,6 @@
 # AlmaLinux 10 x86_64 — integrated installer candidate
 
-The revision 9 bundle replaces the former package-only AlmaLinux entrypoint.
+The revision 10 bundle replaces the former package-only AlmaLinux entrypoint.
 Run `bash install-almalinux.sh` as the normal operator from the extracted bundle.
 Do not prefix it with sudo. Keep all QEMU guests off for setup/hook replacement.
 
@@ -39,9 +39,9 @@ validated native Boxes and signed AlmaLinux libvirt-gconfig/libvirt-gobject RPMs
 ```bash
 python3 packaging/rpm/build.py --target el10 --output dist/el10-rpm
 python3 packaging/rpm/build_bundle.py \
-  --rpm dist/el10-rpm/forge-4.2.0-9.el10.x86_64.rpm \
+  --rpm dist/el10-rpm/forge-4.2.0-10.el10.x86_64.rpm \
   --dependencies /path/to/native-boxes-rpms \
-  --output dist/forge-almalinux-4.2.0-9
+  --output dist/forge-almalinux-4.2.0-10
 ```
 
 Use a new output directory for each candidate. A native runtime needs no Rust
@@ -51,7 +51,7 @@ with upstream VM OpenPGP verification.
 
 ## Acceptance status
 
-150 workspace tests passed before physical installer acceptance, including helper
+152 workspace tests passed before physical installer acceptance, including helper
 output framing, continued operation after a failed job and existing role/network,
 image and storage tests. These do not replace four complete native installer runs.
 
@@ -66,3 +66,13 @@ image and storage tests. These do not replace four complete native installer run
 USB B was connected on 2026-10-16 (Realtek RTL8153). Physical Dedicated tests can
 now be attempted; do not mark them passed merely because the interface is present.
 Do not run concurrent host diagnostics during prompt-count acceptance.
+
+Revision 9 Standard/music completed with one sudo, zero Polkit and audible music.
+Revision 9 Standard/silence failed on a libvirt read after idle daemon shutdown.
+Revision 10 retries only bounded transient read disconnects; mutations never retry.
+The storage question now explicitly concerns Forge disk placement, never deletion
+of other guests. Dedicated asks for both cables, identifies active A/B, checks A
+owns the host default route, applies the existing quarantine/lease/routing logic
+through the shared root helper and checks B's DHCP/policy routing. Link/DHCP checks
+are not guest internet or physical-path independence tests; those remain pending.
+The later private strict-independent-provider variant is deferred in PORT-CONTRACT.md.

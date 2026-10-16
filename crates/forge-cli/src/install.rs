@@ -48,11 +48,24 @@ pub fn run(bundle: &Path) -> Result<(), ForgeError> {
                 _ => eprintln!("Wybierz 1 albo 2."),
             }
         };
+        if mode == NetworkMode::Dedicated {
+            println!("Podłącz kabel A do Ethernet hosta oraz kabel B do adaptera USB Ethernet.");
+            println!("A jest dla hosta, B dla gości. Mogą używać tego samego routera/dostawcy.");
+            loop {
+                let response = answer("Enter: sprawdź A/B; q: anuluj: ")?;
+                if response == "q" { return Err(ForgeError::InvalidInput("Installation cancelled".to_owned())); }
+                match forge_core::installer::check_dedicated_links() {
+                    Ok((a,b)) => { println!("Wykryto A={a}, B={b}. Linki są aktywne; internet gości sprawdzimy oddzielnie."); break; }
+                    Err(error) => eprintln!("{error}"),
+                }
+            }
+        }
         let _ = std::process::Command::new("df").args(["-h", "/var/lib", "/home", &paths.meta.to_string_lossy()]).status();
-        println!("1) Zachowaj /var/lib/forge i istniejące montowanie.");
-        println!("2) Nowe, puste laboratorium na /home/forge-storage (bez migracji istniejących danych).");
+        println!("Miejsce na dyski Forge — żadna opcja nie usuwa innych maszyn wirtualnych.");
+        println!("1) Użyj obecnego miejsca; zachowaj istniejące maszyny Forge (zalecane przy aktualizacji).");
+        println!("2) Przy nowej instalacji utwórz miejsce na /home; nie przenoś ani nie usuwaj istniejących VM.");
         let home = loop {
-            match answer("Magazyn [1/2; Enter: zachowaj]: ")?.as_str() {
+            match answer("Miejsce na dyski [1/2; Enter: zachowaj]: ")?.as_str() {
                 "" | "1" => break false,
                 "2" => break true,
                 _ => eprintln!("Wybierz 1 albo 2."),

@@ -345,7 +345,7 @@ fn busctl(path: &str, interface: &str, method: &str, args: &[&str]) -> Result<St
         method,
     ];
     cmd.extend_from_slice(args);
-    cmd::run_checked("busctl", &cmd)
+    network_command("busctl", &cmd)
 }
 
 fn object_path(text: &str) -> Option<String> {
@@ -723,7 +723,7 @@ fn nm(args: &[&str]) -> Result<String> {
             "nmcli is required to keep cable B off the host (NetworkManager)".to_owned(),
         ));
     }
-    cmd::run_checked("nmcli", args)
+    network_command("nmcli", args)
 }
 
 fn read_nics(root: &Path) -> Result<Vec<Nic>> {
@@ -1193,4 +1193,24 @@ default via 192.168.50.1 dev enp10s0 proto dhcp metric 101
         fs::write(nic.join("address"), format!("{mac}\n")).unwrap();
         fs::write(nic.join("carrier"), "1\n").unwrap();
     }
+}
+
+fn network_command(name: &str, args: &[&str]) -> Result<String> {
+    if cmd::has_priv_session() {
+        let args = args.iter().map(|a| cmd::shell_quote(a)).collect::<Vec<_>>().join(" ");
+        cmd::priv_capture(&format!("{} {args} 2>&1", cmd::shell_quote(name)))
+    } else { cmd::run_checked(name, args) }
+}
+
+pub(crate) fn dedicated_links() -> Result<(String, String)> {
+    let snap = observe()?;
+    let a: Vec<_> = snap.nics.iter().filter(|n| n.kind == Kind::PciEthernet && n.carrier && snap.defaults.contains(&n.name)).collect();
+    let b: Vec<_> = snap.nics.iter().filter(|n| n.kind == Kind::UsbNet && n.carrier).collect();
+    if a.len() != 1 || b.len() != 1 {
+        return Err(ForgeError::Host("Dedicated requires one active PCI Ethernet A with the host default route and one connected USB Ethernet B. Connect both cables; ambiguous adapters require explicit configuration.".to_owned()));
+    }
+    if snap.defaults.contains(&b[0].name) {
+        return Err(ForgeError::Host("USB B currently owns a host default route. Restore host internet through A before Dedicated setup.".to_owned()));
+    }
+    Ok((a[0].name.clone(), b[0].name.clone()))
 }
