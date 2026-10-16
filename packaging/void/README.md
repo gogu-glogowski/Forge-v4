@@ -1,10 +1,15 @@
 # Void Linux glibc x86_64: experimental XBPS port
 
+Target installer experience: [shared port contract](../../PORT-CONTRACT.md).
+The contract includes music-first selection, prerequisite checks/install, explicit
+network selection and integrated image preparation with one authentication.
+Existing manual instructions below are not proof that this complete flow is implemented.
+
 Build with cargo and xbps-create on PATH:
 `python3 packaging/void/build.py --output /tmp/forge-xbps`.
 Index the directory with `xbps-rindex -a /tmp/forge-xbps/*.xbps`, then install from
 that local repository with `sudo xbps-install -R /tmp/forge-xbps forge`.
-Install `mpv` separately for online music. This package is unsigned.
+`mpv` is installed as a required dependency for online music. This package is unsigned.
 
 Use an updated glibc host (>=2.39 for this binary), not musl. Native dependency
 resolution and physical guest operation have not been validated on Void yet.

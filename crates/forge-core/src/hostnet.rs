@@ -152,44 +152,47 @@ pub fn allow_libvirt_forward() -> Result<()> {
     if !cmd::exists("firewall-cmd") {
         return Ok(());
     }
+    // Even runtime queries can require firewalld config.info authorization.
+    // Preparation must not launch any firewall client outside its root helper.
+    if cmd::has_priv_session() {
+        return cmd::priv_script(LIBVIRT_FORWARD_SCRIPT);
+    }
     match firewall_state() {
         Firewalld::Absent | Firewalld::Stopped => return Ok(()),
         Firewalld::Running => {}
     }
-    if libvirt_forwards() == Some(true) {
-        let _ = firewall_cmd(&["--permanent", "--zone=libvirt", "--add-forward"]);
-        return Ok(());
-    }
-    firewall_cmd(&["--zone=libvirt", "--add-forward"])?;
-    firewall_cmd(&["--permanent", "--zone=libvirt", "--add-forward"])?;
-    if libvirt_forwards() != Some(true) {
-        return Err(ForgeError::Host(
-            "firewalld zone libvirt still does not forward; the gateway cannot reach the router"
-                .to_owned(),
-        ));
-    }
-    Ok(())
+    // Mutations must share prepare's authenticated helper. Direct firewall-cmd
+    // writes cause an independent Polkit prompt for every prepared profile.
+    cmd::priv_script(LIBVIRT_FORWARD_SCRIPT)
 }
 
 #[must_use]
 pub fn libvirt_forwards() -> Option<bool> {
-    let output = cmd::command("firewall-cmd")
-        .args(["--zone=libvirt", "--query-forward"])
-        .output()
-        .ok()?;
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    if text.to_ascii_lowercase().contains("yes") {
-        Some(true)
-    } else if text.to_ascii_lowercase().contains("no") {
-        Some(false)
-    } else {
-        None
-    }
+    // A read-only doctor must not trigger authentication. Firewalld's config.info
+    // policy protects runtime inspection too; service-side authorization may
+    // request interaction despite a caller's D-Bus no-interaction flag.
+    // Setup/preparation verifies the live state inside LIBVIRT_FORWARD_SCRIPT.
+    None
 }
+
+const LIBVIRT_FORWARD_SCRIPT: &str = r#"
+set -eu
+if firewall-cmd --state >/dev/null 2>&1; then
+    :
+else
+    status=$?
+    [ "$status" -eq 252 ] && exit 0
+    exit "$status"
+fi
+if ! firewall-cmd --zone=libvirt --query-forward >/dev/null; then
+    firewall-cmd --zone=libvirt --add-forward >/dev/null
+fi
+if ! firewall-cmd --permanent --zone=libvirt --query-forward >/dev/null; then
+    firewall-cmd --permanent --zone=libvirt --add-forward >/dev/null
+fi
+firewall-cmd --zone=libvirt --query-forward >/dev/null
+firewall-cmd --permanent --zone=libvirt --query-forward >/dev/null
+"#;
 
 /// Table 100 already sends the gateway range out this USB NIC, and that NIC
 /// is not Fedora's default route.
@@ -342,7 +345,7 @@ fn busctl(path: &str, interface: &str, method: &str, args: &[&str]) -> Result<St
         method,
     ];
     cmd.extend_from_slice(args);
-    cmd::run_checked("busctl", &cmd)
+    network_command("busctl", &cmd)
 }
 
 fn object_path(text: &str) -> Option<String> {
@@ -454,24 +457,18 @@ enum Firewalld {
 }
 
 fn firewall_state() -> Firewalld {
-    let Ok(output) = cmd::command("firewall-cmd").arg("--state").output() else {
+    let Ok(output) = cmd::command("busctl")
+        .args(["--system", "--allow-interactive-authorization=no", "call",
+            "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+            "NameHasOwner", "s", "org.fedoraproject.FirewallD1"])
+        .output() else {
         return Firewalld::Absent;
     };
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-    .to_ascii_lowercase();
-    if text.contains("running") && !text.contains("not running") {
+    if output.status.success() && cmd::stdout(&output) == "b true" {
         Firewalld::Running
     } else {
         Firewalld::Stopped
     }
-}
-
-fn firewall_cmd(args: &[&str]) -> Result<String> {
-    cmd::run_checked("firewall-cmd", args)
 }
 
 fn dhcp_router(options: &str) -> Option<String> {
@@ -726,7 +723,7 @@ fn nm(args: &[&str]) -> Result<String> {
             "nmcli is required to keep cable B off the host (NetworkManager)".to_owned(),
         ));
     }
-    cmd::run_checked("nmcli", args)
+    network_command("nmcli", args)
 }
 
 fn read_nics(root: &Path) -> Result<Vec<Nic>> {
@@ -944,6 +941,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn forwarding_job_reuses_configuration_and_propagates_write_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("forge-firewall-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let fake = root.join("firewall-cmd");
+        fs::write(&fake, r#"#!/bin/sh
+kind=runtime
+case " $* " in *' --permanent '*) kind=permanent;; esac
+case " $* " in
+  *' --state '*) exit 0;;
+  *' --query-forward '*) test -f "$STATE/$kind";;
+  *' --add-forward '*)
+    test "${FAIL_WRITE:-0}" = 0 || exit 7
+    echo "$kind" >> "$STATE/writes"
+    touch "$STATE/$kind";;
+  *) exit 9;;
+esac
+"#).unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let run = |fail: bool| {
+            std::process::Command::new("/bin/sh")
+                .args(["-c", LIBVIRT_FORWARD_SCRIPT])
+                .env("PATH", format!("{}:/usr/bin:/bin", root.display()))
+                .env("STATE", &root)
+                .env("FAIL_WRITE", if fail { "1" } else { "0" })
+                .status().unwrap()
+        };
+        assert!(run(false).success());
+        let writes = fs::read_to_string(root.join("writes")).unwrap();
+        assert_eq!(writes, "runtime\npermanent\n");
+        for _ in 0..4 { assert!(run(false).success()); }
+        assert_eq!(fs::read_to_string(root.join("writes")).unwrap(), writes);
+        fs::remove_file(root.join("permanent")).unwrap();
+        assert!(!run(true).success());
+        assert!(!root.join("permanent").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn network_lock_works_without_parent_write_and_releases_after_error() {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("forge-lock-{}", uuid::Uuid::new_v4()));
@@ -1157,4 +1193,24 @@ default via 192.168.50.1 dev enp10s0 proto dhcp metric 101
         fs::write(nic.join("address"), format!("{mac}\n")).unwrap();
         fs::write(nic.join("carrier"), "1\n").unwrap();
     }
+}
+
+fn network_command(name: &str, args: &[&str]) -> Result<String> {
+    if cmd::has_priv_session() {
+        let args = args.iter().map(|a| cmd::shell_quote(a)).collect::<Vec<_>>().join(" ");
+        cmd::priv_capture(&format!("{} {args} 2>&1", cmd::shell_quote(name)))
+    } else { cmd::run_checked(name, args) }
+}
+
+pub(crate) fn dedicated_links() -> Result<(String, String)> {
+    let snap = observe()?;
+    let a: Vec<_> = snap.nics.iter().filter(|n| n.kind == Kind::PciEthernet && n.carrier && snap.defaults.contains(&n.name)).collect();
+    let b: Vec<_> = snap.nics.iter().filter(|n| n.kind == Kind::UsbNet && n.carrier).collect();
+    if a.len() != 1 || b.len() != 1 {
+        return Err(ForgeError::Host("Dedicated requires one active PCI Ethernet A with the host default route and one connected USB Ethernet B. Connect both cables; ambiguous adapters require explicit configuration.".to_owned()));
+    }
+    if snap.defaults.contains(&b[0].name) {
+        return Err(ForgeError::Host("USB B currently owns a host default route. Restore host internet through A before Dedicated setup.".to_owned()));
+    }
+    Ok((a[0].name.clone(), b[0].name.clone()))
 }

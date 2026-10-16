@@ -67,6 +67,9 @@ driver. Manjaro's actual build must be checked separately. Forge retains its ref
 to run unconfined guests. These packages were built locally on Pop!_OS; clean
 Fedora/Arch/Manjaro desktop VM smoke tests remain pending. No ISO is built.
 
+Native installers follow the [port installation contract](PORT-CONTRACT.md).
+Each distribution guide must report its implemented flow and remaining validation.
+
 ## Additional experimental ports and installation lab
 
 Local candidates now include Void Linux glibc x86_64 (XBPS/runit), NixOS (native

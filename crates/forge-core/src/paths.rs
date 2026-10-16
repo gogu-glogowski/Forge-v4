@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::error::Result;
+use crate::error::{ForgeError, Result};
 use crate::profile::Profile;
 
 #[derive(Debug, Clone)]
@@ -127,6 +127,40 @@ pub fn chmod(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
+/// Keep host services usable even when a base image is larger than expected.
+pub const STORAGE_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+pub fn ensure_free_space(target: &Path, required: u64) -> Result<()> {
+    let existing = target.ancestors().find(|path| path.exists()).ok_or_else(|| {
+        ForgeError::Host(format!("cannot inspect storage for {}", target.display()))
+    })?;
+    let target_text = existing.to_str().ok_or_else(|| {
+        ForgeError::Host("storage path must be UTF-8".to_owned())
+    })?;
+    let output = crate::cmd::run("df", &["-B1", "--output=avail", "--", target_text])?;
+    let free = crate::cmd::stdout(&output).lines().last()
+        .and_then(|line| line.trim().parse::<u64>().ok())
+        .ok_or_else(|| ForgeError::Host("cannot parse available storage from df".to_owned()))?;
+    check_free_space(target, free, required)
+}
+
+fn check_free_space(target: &Path, free: u64, required: u64) -> Result<()> {
+    let needed = required.checked_add(STORAGE_RESERVE_BYTES).ok_or_else(|| {
+        ForgeError::Host("required storage size overflow".to_owned())
+    })?;
+    if free < needed {
+        return Err(ForgeError::Host(format!(
+            "not enough space on the filesystem containing {}: {} bytes available, \
+             {} needed including a 4 GiB host reserve. No base was replaced. \
+             Select a larger filesystem for lab storage; free space in /home \
+             is not automatically available to /var/lib/forge. Sparse files are \
+             conservatively budgeted at their logical size.",
+            target.display(), free, needed,
+        )));
+    }
+    Ok(())
+}
+
 #[must_use]
 pub fn is_readable(path: &Path) -> bool {
     File::open(path).is_ok()
@@ -187,6 +221,20 @@ pub fn effective_uid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_preflight_preserves_reserve_and_rejects_overflow() {
+        let target = Path::new("/var/lib/forge/bases");
+        assert!(check_free_space(target, STORAGE_RESERVE_BYTES + 100, 100).is_ok());
+        assert!(check_free_space(target, STORAGE_RESERVE_BYTES + 99, 100).is_err());
+        assert!(check_free_space(target, u64::MAX, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn storage_preflight_checks_the_destination_filesystem() {
+        let dir = std::env::temp_dir();
+        assert!(ensure_free_space(&dir.join("forge-not-yet-created/bases"), u64::MAX).is_err());
+    }
 
     #[test]
     fn data_dir_override_is_unprivileged() {

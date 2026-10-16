@@ -1,3 +1,23 @@
+## EL10 RPM release 4: storage recovery
+
+- Check destination capacity with a 4 GiB host reserve and budget the Whonix pair together.
+- Preserve sparse bases; copy through a temporary file and atomically replace only on success.
+- Remove failed temporary copies while retaining the existing canonical base.
+- Add explicit storage selection for new AlmaLinux labs; require verified migration for existing data.
+- Keep existing operator/host identity, system libvirt paths, SELinux and network policy.
+
+## EL10 RPM release 3 (4.2.0-3.el10)
+
+- Accept libvirt's default NAT port range in network validation for forge-standard and forge-wan.
+- Continue rejecting custom NAT addresses, port ranges, pinned uplinks and routed forwarding.
+
+## AlmaLinux 10 native Boxes candidate (2026-10-15)
+
+- Add a builder for GNOME Boxes 50.0 using verified upstream source and AlmaLinux libraries.
+- Document signed AlmaLinux Devel runtime dependencies without globally enabling Devel.
+- EL10 Forge RPM release 2 retains GNOME Boxes and recognizes /usr/libexec/qemu-kvm.
+- Keep experimental readiness status pending physical GUI/VM and confinement validation.
+
 # Changelog
 
 ## Unreleased — physical installation lab and experimental ports

@@ -1,5 +1,10 @@
 # Arch Linux / Manjaro rolling packages
 
+Target installer experience: [shared port contract](../../PORT-CONTRACT.md).
+The contract includes music-first selection, prerequisite checks/install, explicit
+network selection and integrated image preparation with one authentication.
+Existing manual instructions below are not proof that this complete flow is implemented.
+
 Target: current, fully updated x86_64 Arch Linux or Manjaro with systemd,
 NetworkManager, KVM and enforcing AppArmor/SELinux through libvirt. `ID=arch` and
 `ID=manjaro` are recognized even when VERSION_ID is absent. Partial upgrades and

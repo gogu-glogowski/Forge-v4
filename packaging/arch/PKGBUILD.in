@@ -8,9 +8,8 @@ license=('Apache-2.0' 'CC-BY-4.0')
 depends=('glibc>=2.39' 'gcc-libs' 'qemu-desktop' 'qemu-img' 'libvirt' 'gnome-boxes'
          'apparmor' 'gnupg' 'curl' 'ca-certificates' '7zip' 'tar' 'xz' 'e2fsprogs'
          'networkmanager' 'iproute2' 'procps-ng' 'psmisc' 'systemd' 'sudo'
-         'coreutils' 'util-linux' 'dnsmasq' 'nftables' 'iptables')
+         'mpv' 'coreutils' 'util-linux' 'dnsmasq' 'nftables' 'iptables')
 makedepends=('rust>=1.89' 'cargo')
-optdepends=('mpv: online background music during prepare --all')
 options=('!strip' '!debug')
 source=("forge-${pkgver}-source.tar.gz")
 sha256sums=('@SOURCE_SHA256@')

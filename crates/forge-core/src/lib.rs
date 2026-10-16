@@ -1,6 +1,7 @@
 //! Forge 4.2.0 engine: fail-closed roles, signed bases, overlay VMs.
 
 mod boxes;
+pub mod installer;
 mod cmd;
 pub mod doctor;
 pub mod download;

@@ -501,10 +501,10 @@ fn libvirt_forward_check(mode: crate::network::Mode) -> Check {
             ),
         },
         None => Check {
-            status: CheckStatus::Ok,
+            status: CheckStatus::Warn,
             name: "libvirt forward".to_owned(),
-            detail: "firewalld is not deciding the gateway path".to_owned(),
-            fix: None,
+            detail: "live firewall configuration not inspected: doctor does not request privilege authentication; setup/prepare verifies forwarding in its authenticated helper".to_owned(),
+            fix: Some("forge prepare --all".to_owned()),
         },
     }
 }

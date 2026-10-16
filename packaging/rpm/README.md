@@ -1,4 +1,12 @@
+For the integrated AlmaLinux installer, use [the dedicated guide](ALMALINUX.md).
+Older AlmaLinux manual/package-only instructions below are historical.
+
 # Fedora RPM
+
+Target installer experience: [shared port contract](../../PORT-CONTRACT.md).
+The contract includes music-first selection, prerequisite checks/install, explicit
+network selection and integrated image preparation with one authentication.
+Existing manual instructions below are not proof that this complete flow is implemented.
 
 Target: Fedora 44+ Workstation, x86_64, systemd, NetworkManager, KVM and enforcing
 SELinux. This is an unsigned third-party binary RPM, not a Fedora repository submission.
@@ -20,7 +28,7 @@ Enable the existing modular libvirt sockets as described in the main README,
 join libvirt/kvm groups and log out/in. With guests stopped, run `/usr/bin/forge setup`,
 then `/usr/bin/forge prepare --all` as the normal user. SELinux remains enforcing.
 MP3s stream from the Forge repository; credits/license are packaged locally.
-`mpv` is recommended, and music failures never stop image preparation.
+`mpv` is a required package dependency, and music failures never stop image preparation.
 
 The RPM has no installation/removal scriptlets. It does not modify networks,
 activate a hook, restart libvirt or start/stop guests. Remove/purge leaves the lab,
@@ -35,7 +43,7 @@ other immutable desktops need additional host-integration validation.
 ## AlmaLinux / Rocky Linux 10+ candidate
 
 `python3 packaging/rpm/build.py --target el10 --output /tmp/forge-el10`
-builds a separate `1.el10` RPM requiring AlmaLinux or Rocky release >=10. It does
+builds a separate `4.el10` RPM requiring AlmaLinux or Rocky release >=10. It does
 not reuse Fedora's release dependency. The same glibc >=2.39 floor applies.
 Package availability (notably Boxes, mpv and 7zip) must be checked in the enabled
 EL10 repositories; no EPEL/CRB repository is silently added. Native dependency
@@ -51,3 +59,70 @@ Forge currently emits SPICE graphics/channel XML. Do not bypass dependencies or
 replace native Boxes with Flatpak and assume equivalent system-libvirt integration.
 References: https://almalinux.org/blog/2025-05-27-welcoming-almalinux-10/ and
 https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html-single/configuring_and_managing_linux_virtual_machines/index
+
+## Native Boxes on AlmaLinux 10.2
+
+The missing Boxes dependency can be supplied as a native RPM built with
+`build_boxes.py`; Forge continues to use GNOME Boxes and qemu:///system.
+This is an experimental local port, pending graphical and VM start/stop validation.
+
+Download GNOME Boxes 50.0 from
+https://download.gnome.org/sources/gnome-boxes/50/gnome-boxes-50.0.tar.xz .
+The builder verifies its upstream SHA256 before building or packaging.
+Run `python3 packaging/rpm/build_boxes.py --source gnome-boxes-50.0.tar.xz --output dist/boxes`.
+It requires Meson, Ninja, GCC, Vala, gettext, yelp-tools, itstool, desktop-file-utils,
+libappstream-glib and development packages for GTK3, GLib, libarchive, libhandy,
+libosinfo, libportal-gtk3, libsoup3, libusb1, libvirt-gconfig, libvirt-gobject,
+libxml2, spice-gtk3 (including Vala), WebKitGTK 4.1 and libgudev.
+Build-only packages libosinfo-devel and libvirt-*-devel can require AlmaLinux Devel.
+
+AlmaLinux Devel also supplies the signed runtime packages libvirt-gconfig and
+libvirt-gobject 5.0.0-4.el10. Install those exact official RPMs in the same DNF
+transaction as Boxes and Forge; Devel does not need to stay enabled globally.
+CRB and EPEL are required for the remaining dependencies. Do not bypass the solver.
+The Boxes RPM bundles only its private upstream libgovf, whose automatic dependency
+is excluded because the library is shipped in /usr/lib64/gnome-boxes with RUNPATH.
+System GTK, SPICE and libvirt libraries are resolved by RPM normally.
+
+`build_boxes.py --stage DESTDIR` packages an existing staged Meson build and must
+be used only after building/testing that same verified source for AlmaLinux.
+The RPM preserves translations, help, desktop metadata, schema and license.
+It does not start services, configure networks or alter Forge guests.
+
+After installation, use `forge dev doctor`, then configure libvirt access and SELinux
+as instructed by diagnostics. With guests stopped, `forge setup --network standard`
+creates the Boxes QEMU System source. Open native `gnome-boxes` and verify that
+Forge guests appear under that connection. The `port readiness` failure is retained
+until a physical start/stop and confinement audit is completed.
+
+EL10 release 3 accepts libvirt's canonical NAT port range 1024–65535 in network diagnostics; custom NAT ranges, addresses and pinned uplinks remain rejected.
+
+## Complete installer contract
+
+All ports follow AGENTS.md: full configuration, music playback dependencies,
+explicit Standard/Dedicated selection, and at most one authentication per operation.
+The AlmaLinux bundle entrypoint is `bash install-almalinux.sh` with the four RPMs
+and SHA256SUMS alongside it. It asks for the mode, preserves an existing lab mode
+as the default, explicitly installs mpv, and runs Forge setup for the selection.
+Direct `dnf install` cannot offer the interactive selection; use the bundle
+entrypoint or perform explicit setup afterwards.
+
+The per-image authentication bug remains open. Shell syntax and dependency edits
+were checked, but cold-credential prompt counts, live audio and both hardware
+network workflows must pass independently on each distribution before readiness.
+The package dependency changes apply to future builds; already installed releases
+need mpv installed explicitly. Music can still be disabled with --no-music.
+
+
+## Storage recovery and release 4
+
+Base/overlay paths remain /var/lib/forge; cache remains in the operator's XDG data
+location. The installer displays real filesystem capacity and offers a new,
+root-owned /home/forge-storage bind mount. Existing nonempty labs require a
+verified, stopped-guest migration; the installer refuses an implicit move.
+
+Release 4 budgets logical source sizes plus a 4 GiB destination reserve, including
+both Whonix images before starting the pair copy. Sparse copying is retained.
+A failed copy removes its temporary file rather than leaving a truncated canonical
+base; a previously installed base remains intact until the final rename.
+Do not use FORGE_DATA_DIR to work around production ownership/confinement checks.
