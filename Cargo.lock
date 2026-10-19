@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "forge-cli"
-version = "4.2.0"
+version = "4.2.2"
 dependencies = [
  "clap",
  "ctrlc",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "forge-core"
-version = "4.2.0"
+version = "4.2.2"
 dependencies = [
  "hex",
  "roxmltree",

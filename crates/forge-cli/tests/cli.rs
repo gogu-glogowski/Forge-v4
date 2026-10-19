@@ -106,7 +106,13 @@ fn prepare_requires_all_and_exposes_music_and_manual_sift() {
     let out = forge().args(["prepare", "--help"]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
-    for flag in ["--all", "--no-music", "--music-dir", "--sift-ova"] {
+    for flag in [
+        "--all",
+        "--no-music",
+        "--music-dir",
+        "--sift-ova",
+        "--images-only",
+    ] {
         assert!(text.contains(flag), "{text}");
     }
     let out = forge().arg("prepare").output().unwrap();
@@ -223,5 +229,47 @@ fn prepare_interrupt_stops_audio_and_removes_temporary_playlist() {
     assert!(!std::path::Path::new(playlist.trim()).exists());
     assert!(!std::path::Path::new(&format!("/proc/{}", player_pid.trim())).exists());
     assert!(dir.join("track.mp3").exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn prepare_profile_selection_rejects_conflicting_and_unknown_arguments() {
+    let help = forge().args(["prepare", "--help"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--profiles"));
+    for args in [
+        vec!["prepare", "--all", "--profiles", "kali"],
+        vec!["prepare", "--profiles", "unknown"],
+        vec!["prepare", "--profiles", "whonix-workstation"],
+        vec!["prepare", "--profiles", ""],
+    ] {
+        let out = forge().args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2));
+    }
+}
+
+#[test]
+fn images_only_refuses_running_guests_without_configuring_hooks() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("forge-images-test-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&dir).unwrap();
+    let virsh = dir.join("virsh");
+    fs::write(&virsh, "#!/bin/sh\ncase \"$3 $4\" in\n'uri ') echo qemu:///system;;\n'list --name') echo running-guest;;\n*) echo unexpected-virsh-call >&2; exit 99;;\nesac\n").unwrap();
+    fs::set_permissions(&virsh, fs::Permissions::from_mode(0o755)).unwrap();
+    let out = forge()
+        .args([
+            "prepare",
+            "--profiles",
+            "kali,whonix",
+            "--images-only",
+            "--no-music",
+        ])
+        .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
+        .env("FORGE_DATA_DIR", dir.join("data"))
+        .env("XDG_CONFIG_HOME", dir.join("config"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("stop all QEMU guests"));
     fs::remove_dir_all(dir).unwrap();
 }

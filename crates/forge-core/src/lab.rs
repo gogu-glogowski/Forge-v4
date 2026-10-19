@@ -87,6 +87,38 @@ impl Forge {
         }
     }
 
+    /// Prepare only selected profiles, preserving the same verification and resume rules.
+    pub fn prepare_selected(
+        &self,
+        profiles: &[Profile],
+        sift_ova: Option<&Path>,
+        progress: &Progress,
+    ) -> Result<crate::prepare::PrepareReport> {
+        let run = || crate::prepare::run_selected(self, profiles, sift_ova, progress);
+        if self.paths.privileged_bases && !crate::cmd::has_priv_session() {
+            let session = crate::cmd::SudoSession::start()?;
+            crate::cmd::scope_priv(session, run)
+        } else {
+            run()
+        }
+    }
+
+    /// Download and verify bases without installing hooks or defining guests.
+    pub fn download_selected(
+        &self,
+        profiles: &[Profile],
+        sift_ova: Option<&Path>,
+        progress: &Progress,
+    ) -> Result<crate::prepare::PrepareReport> {
+        let run = || crate::prepare::download_selected(self, profiles, sift_ova, progress);
+        if self.paths.privileged_bases && !crate::cmd::has_priv_session() {
+            let session = crate::cmd::SudoSession::start()?;
+            crate::cmd::scope_priv(session, run)
+        } else {
+            run()
+        }
+    }
+
     pub fn pull(&self, profile: Profile, progress: &Progress) -> Result<()> {
         pull::pull(&self.paths, profile, progress)?;
         Ok(())
@@ -1064,7 +1096,7 @@ impl Forge {
 }
 
 impl crate::prepare::Backend for Forge {
-    fn setup(&self) -> Result<()> {
+    fn check_stopped(&self) -> Result<()> {
         if !virt::virsh(&self.uri, &["list", "--name"])?
             .trim()
             .is_empty()
@@ -1073,6 +1105,10 @@ impl crate::prepare::Backend for Forge {
                 "stop all QEMU guests before prepare --all".to_owned(),
             ));
         }
+        Ok(())
+    }
+    fn setup(&self) -> Result<()> {
+        <Self as crate::prepare::Backend>::check_stopped(self)?;
         // Recover the narrow interruption window after ownership was written but
         // before virsh define completed. Never adopt an unrecorded overlay/domain.
         for own in self.owned_all()? {

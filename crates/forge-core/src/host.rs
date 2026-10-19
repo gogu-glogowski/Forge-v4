@@ -8,6 +8,7 @@ pub enum Distribution {
     Fedora,
     Arch,
     Manjaro,
+    Cachyos,
     Debian,
     Ubuntu,
     Pop,
@@ -36,6 +37,7 @@ impl OsRelease {
             "fedora" => Distribution::Fedora,
             "arch" => Distribution::Arch,
             "manjaro" => Distribution::Manjaro,
+            "cachyos" => Distribution::Cachyos,
             "debian" => Distribution::Debian,
             "ubuntu" => Distribution::Ubuntu,
             "pop" => Distribution::Pop,
@@ -107,13 +109,15 @@ impl OsRelease {
                     dependency.debian_package
                 }
             }
-            Distribution::Arch | Distribution::Manjaro => dependency.arch_package,
+            Distribution::Arch | Distribution::Manjaro | Distribution::Cachyos => dependency.arch_package,
             Distribution::Unknown => return None,
         };
         let manager = match self.distribution {
             Distribution::Fedora | Distribution::Alma | Distribution::Rocky => "dnf install",
             Distribution::Void => "xbps-install -S",
-            Distribution::Arch | Distribution::Manjaro => "pacman -S --needed",
+            Distribution::Arch | Distribution::Manjaro | Distribution::Cachyos => {
+                "pacman -S --needed"
+            }
             _ => "apt install",
         };
         Some(format!("sudo {manager} {package}"))
@@ -624,7 +628,7 @@ impl Host {
                     &["-W", "-f=${db:Status-Status}", "gnome-boxes"],
                 )
                 .is_some_and(|status| status.trim() == "installed"),
-            Distribution::Arch | Distribution::Manjaro => {
+            Distribution::Arch | Distribution::Manjaro | Distribution::Cachyos => {
                 probe.output("pacman", &["-Q", "gnome-boxes"]).is_some()
             }
             Distribution::Void => probe
@@ -772,6 +776,7 @@ mod tests {
             ("pop", Distribution::Pop),
             ("arch", Distribution::Arch),
             ("manjaro", Distribution::Manjaro),
+            ("cachyos", Distribution::Cachyos),
             ("mint", Distribution::Unknown),
         ] {
             let os = OsRelease::parse(&format!(
@@ -795,6 +800,7 @@ mod tests {
             ("ID=pop\nVERSION_ID=22.04", "sudo apt install p7zip-full"),
             ("ID=arch", "sudo pacman -S --needed 7zip"),
             ("ID=manjaro", "sudo pacman -S --needed 7zip"),
+            ("ID=cachyos\nID_LIKE=arch", "sudo pacman -S --needed 7zip"),
         ] {
             assert_eq!(
                 OsRelease::parse(release).install_hint(zip).as_deref(),
@@ -852,7 +858,7 @@ mod tests {
 
     #[test]
     fn rolling_hosts_detect_native_boxes_and_specific_package_hints() {
-        for id in ["arch", "manjaro"] {
+        for id in ["arch", "manjaro", "cachyos"] {
             let fixture = Fixture::default().file("/etc/os-release", &format!("ID={id}"));
             assert!(!Host::probe(&fixture).native_boxes);
             let fixture = fixture.command("pacman", &["-Q", "gnome-boxes"], "gnome-boxes 49.0-1");

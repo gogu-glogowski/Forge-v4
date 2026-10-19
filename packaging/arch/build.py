@@ -4,6 +4,7 @@ import argparse
 import hashlib
 from pathlib import Path
 import os
+import re
 import shutil
 import shlex
 import subprocess
@@ -12,6 +13,29 @@ import tempfile
 import tomllib
 
 REPO = Path(__file__).resolve().parents[2]
+
+def package_filename():
+    version = tomllib.loads((REPO / 'Cargo.toml').read_text())['workspace']['package']['version']
+    release = re.search(r'^pkgrel=([0-9]+(?:\.[0-9]+)*)$',
+                        (REPO / 'packaging/arch/PKGBUILD.in').read_text(), re.M)
+    if not release:
+        raise ValueError('Missing numeric pkgrel in Arch recipe')
+    return f'forge-lab-{version}-{release.group(1)}-x86_64.pkg.tar.zst'
+
+
+def source_files():
+    """Work from a checkout or an extracted, self-contained source release."""
+    root = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=REPO,
+                          capture_output=True, text=True)
+    if root.returncode == 0 and Path(root.stdout.strip()).resolve() == REPO:
+        return subprocess.check_output(
+            ['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+            cwd=REPO).decode().rstrip('\0').split('\0')
+    excluded = {'.git', 'dist', 'target', '__pycache__', '.venv'}
+    return [str(p.relative_to(REPO)) for p in REPO.rglob('*')
+            if p.is_file() and not p.is_symlink()
+            and not excluded.intersection(p.relative_to(REPO).parts)]
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -23,7 +47,7 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     source = output / f'forge-{version}-source.tar.gz'
-    tracked = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=REPO).decode().rstrip('\0').split('\0')
+    tracked = source_files()
     with tarfile.open(source, 'w:gz') as archive:
         for name in sorted(set(tracked)):
             path = REPO / name
@@ -56,7 +80,7 @@ def main():
         if args.config:
             command.extend(['--config', str(args.config.resolve())])
         subprocess.run(command, cwd=work, env=env, check=True)
-    package = output / f'forge-{version}-1-x86_64.pkg.tar.zst'
+    package = output / package_filename()
     assert package.is_file(), 'makepkg config must set PKGEXT=.pkg.tar.zst'
     (output / 'SHA256SUMS').write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in [package, source, output / 'PKGBUILD']))
     print('Arch package:', package)

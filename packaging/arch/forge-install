@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Unpack the matching installed installer sources into a private working directory."""
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tarfile
+import tempfile
+
+if os.geteuid() == 0:
+    raise SystemExit('Uruchom forge-install jako użytkownik pulpitu, bez sudo.')
+# Keep build logs and recovery artifacts after a reboot or error.
+cache = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache') / 'forge/installer-runs'
+cache.mkdir(parents=True, exist_ok=True)
+root = Path(tempfile.mkdtemp(prefix='run-', dir=cache))
+print(f'Pliki instalatora i logi: {root}', flush=True)
+with tarfile.open('/usr/share/forge/installer-source.tar.gz') as archive:
+    archive.extractall(root, filter='data')
+entries = list(root.glob('forge-*/install.sh'))
+if len(entries) != 1:
+    raise SystemExit('Nieprawidłowe źródła instalatora w paczce.')
+arguments = sys.argv[1:] or ['--stage', 'install']
+raise SystemExit(subprocess.call(['bash', str(entries[0]), *arguments]))

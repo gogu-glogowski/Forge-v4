@@ -946,11 +946,26 @@ fn daemon_sees_hook() -> Result<bool> {
     Ok(daemon_start + Duration::from_secs(2) >= hook_mtime)
 }
 
+fn daemon_pid_from_output(text: &str, owner: impl Fn(i32) -> Option<u32>) -> Option<i32> {
+    text.split_whitespace()
+        .filter_map(|value| value.parse::<i32>().ok())
+        .find(|&pid| pid > 0 && owner(pid) == Some(0))
+}
+
 fn virtqemud_pid() -> Option<i32> {
-    let text = cmd::run_checked("pidof", &["virtqemud"])
-        .or_else(|_| cmd::run_checked("pidof", &["libvirtd"]))
-        .ok()?;
-    text.split_whitespace().next()?.parse().ok()
+    for name in ["virtqemud", "libvirtd"] {
+        let Ok(text) = cmd::run_checked("pidof", &[name]) else {
+            continue;
+        };
+        if let Some(pid) = daemon_pid_from_output(&text, |pid| {
+            fs::metadata(format!("/proc/{pid}"))
+                .ok()
+                .map(|meta| meta.uid())
+        }) {
+            return Some(pid);
+        }
+    }
+    None
 }
 
 fn guest_qemu_running() -> bool {
@@ -1105,6 +1120,17 @@ mod tests {
     use crate::xml::{DomainSpec, domain_xml};
 
     const UUID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+    #[test]
+    fn daemon_selection_ignores_session_processes() {
+        assert_eq!(
+            daemon_pid_from_output("12 34", |pid| Some(if pid == 12 { 1000 } else { 0 })),
+            Some(34)
+        );
+        assert_eq!(daemon_pid_from_output("12", |_| Some(1000)), None);
+        assert_eq!(daemon_pid_from_output("12", |_| None), None);
+        assert_eq!(daemon_pid_from_output("bad -1 0", |_| Some(0)), None);
+    }
 
     #[test]
     fn fresh_host_has_no_hook_stamp() {
