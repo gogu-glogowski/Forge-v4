@@ -1,13 +1,13 @@
+## Unreleased — retain three port targets
+
+- Limit active ports to Arch (including the CachyOS validation host), Fedora and
+  Pop!_OS. Remove experimental Void/NixOS/EL10 and Mint/Zorin support, standalone
+  Debian/Ubuntu/Manjaro recognition, and the experimental OS installation kit.
+- Keep the DEB builder/lifecycle checks for Pop!_OS under packaging/pop.
+- Preserve Pop!_OS Standard-mode smoke-test evidence and require separate native
+  Arch/Fedora end-to-end validation before integration into main.
+
 # Changelog
-
-## Unreleased — physical installation lab and experimental ports
-
-- Add Void glibc/runit discovery, XBPS packaging and isolated lifecycle checks.
-- Add a NixOS source package/module, native libvirt layout and root-owned AppArmor helper setup.
-- Recognize Mint, Zorin, AlmaLinux and Rocky; add an EL10 RPM target.
-- Add Polish installation templates, desktop selection and post-install Ansible configuration.
-- Keep disk choice interactive and existing Ventoy files unchanged; native hardware validation is pending.
-
 
 ## 4.2.0 — multi-distribution packages (2026-10-15)
 

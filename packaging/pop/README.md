@@ -1,16 +1,16 @@
-# Forge 4.2.0 binary DEB
+# Pop!_OS 24.04 — Forge binary DEB
 
-Build on amd64 Debian-family systems with Rust 1.89+, a C compiler, Python 3.11+,
+Build on amd64 Pop!_OS 24.04 with Rust 1.89+, a C compiler, Python 3.11+,
 `dpkg-dev`, `fakeroot` and `xz-utils`:
 
 ```bash
-python3 packaging/debian/build.py
+python3 packaging/pop/build.py
 ```
 
 Output: **one** `dist/forge_4.2.0-1_amd64.deb`. No MP3 payload or music DEB is
 needed. The package includes the small attribution/license/manifest files.
 `dpkg-shlibdeps` derives actual minimum libc/libgcc versions. This build requires
-libc6 >= 2.39; rebuild on an older host for older Debian/Ubuntu releases.
+libc6 >= 2.39. Other DEB-based distributions are outside the current port scope.
 
 ## Install and use
 
@@ -57,10 +57,10 @@ They cover RC-fixture upgrade, reinstall, remove and purge while retaining lab
 fixtures. The RC fixture uses this release's payload, not historical VM data.
 
 ```bash
-fakeroot python3 packaging/debian/test_lifecycle.py --root /tmp/forge-deb-test-new \
+fakeroot python3 packaging/pop/test_lifecycle.py --root /tmp/forge-deb-test-new \
   dist/forge_4.2.0-1_amd64.deb
 ```
 
 This does not test apt's network resolver or real service activation.
-Pop!_OS 24.04 Standard mode has live smoke-test evidence; Debian/Ubuntu and custom
-firewalls remain pending. A/B hardware tests are deferred. AppImage is not built.
+Pop!_OS 24.04 Standard mode has live smoke-test evidence; custom firewall
+configurations remain pending. A/B hardware tests are deferred. AppImage is not built.

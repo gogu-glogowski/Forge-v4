@@ -7,16 +7,7 @@ use crate::cmd;
 pub enum Distribution {
     Fedora,
     Arch,
-    Manjaro,
-    Debian,
-    Ubuntu,
     Pop,
-    Mint,
-    Zorin,
-    Alma,
-    Rocky,
-    Void,
-    Nixos,
     Unknown,
 }
 
@@ -34,17 +25,8 @@ impl OsRelease {
         let id = config_value(text, "ID").unwrap_or_default();
         let distribution = match id.as_str() {
             "fedora" => Distribution::Fedora,
-            "arch" => Distribution::Arch,
-            "manjaro" => Distribution::Manjaro,
-            "debian" => Distribution::Debian,
-            "ubuntu" => Distribution::Ubuntu,
+            "arch" | "cachyos" => Distribution::Arch,
             "pop" => Distribution::Pop,
-            "linuxmint" => Distribution::Mint,
-            "zorin" => Distribution::Zorin,
-            "almalinux" => Distribution::Alma,
-            "rocky" => Distribution::Rocky,
-            "void" => Distribution::Void,
-            "nixos" => Distribution::Nixos,
             _ => Distribution::Unknown,
         };
         Self {
@@ -66,14 +48,6 @@ impl OsRelease {
         }
     }
 
-    pub fn libvirt_config_dir(&self) -> &'static str {
-        if self.distribution == Distribution::Nixos {
-            "/var/lib/libvirt"
-        } else {
-            "/etc/libvirt"
-        }
-    }
-
     pub fn major_version(&self) -> Option<u32> {
         self.version.split('.').next()?.parse().ok()
     }
@@ -81,39 +55,19 @@ impl OsRelease {
     pub fn install_hint(&self, dependency: Dependency) -> Option<String> {
         let package = match self.distribution {
             Distribution::Fedora => dependency.fedora_package,
-            Distribution::Alma | Distribution::Rocky => match dependency.name {
-                "7z" => "7zip",
-                "libvirt virsh" => "libvirt-client libvirt-daemon-kvm",
-                _ => dependency.fedora_package,
-            },
-            Distribution::Void => match dependency.name {
-                "QEMU" | "qemu-img" => "qemu",
-                "libvirt virsh" => "libvirt",
-                "NetworkManager CLI" => "NetworkManager",
-                "systemctl" => "runit",
-                "D-Bus busctl" => return None,
-                "GnuPG" => "gnupg",
-                "7z" => "7zip",
-                "ps" | "pidof" => "procps-ng",
-                "ip" => "iproute2",
-                "getent" => "glibc",
-                _ => dependency.arch_package,
-            },
-            Distribution::Nixos => return Some("Declare Forge's NixOS module in configuration.nix, then run sudo nixos-rebuild switch".to_owned()),
-            Distribution::Debian | Distribution::Ubuntu | Distribution::Pop | Distribution::Mint | Distribution::Zorin => {
+            Distribution::Pop => {
                 if dependency.name == "7z" && self.legacy_seven_zip() {
                     "p7zip-full"
                 } else {
-                    dependency.debian_package
+                    dependency.pop_package
                 }
             }
-            Distribution::Arch | Distribution::Manjaro => dependency.arch_package,
+            Distribution::Arch => dependency.arch_package,
             Distribution::Unknown => return None,
         };
         let manager = match self.distribution {
-            Distribution::Fedora | Distribution::Alma | Distribution::Rocky => "dnf install",
-            Distribution::Void => "xbps-install -S",
-            Distribution::Arch | Distribution::Manjaro => "pacman -S --needed",
+            Distribution::Fedora => "dnf install",
+            Distribution::Arch => "pacman -S --needed",
             _ => "apt install",
         };
         Some(format!("sudo {manager} {package}"))
@@ -124,10 +78,7 @@ impl OsRelease {
             return false;
         };
         match self.distribution {
-            Distribution::Debian => major < 13,
-            Distribution::Ubuntu | Distribution::Pop => major < 24,
-            Distribution::Mint => major < 22,
-            Distribution::Zorin => major < 18,
+            Distribution::Pop => major < 24,
             _ => false,
         }
     }
@@ -161,14 +112,8 @@ pub struct Dependency {
     pub alternatives: &'static [&'static str],
     pub fedora_package: &'static str,
     pub arch_package: &'static str,
-    pub debian_package: &'static str,
+    pub pop_package: &'static str,
     pub required: bool,
-}
-
-/// Root-owned os-release determines layout; no environment overrides in hooks.
-pub fn libvirt_config_dir() -> &'static str {
-    OsRelease::parse(&fs::read_to_string("/etc/os-release").unwrap_or_default())
-        .libvirt_config_dir()
 }
 
 pub const DEPENDENCIES: &[Dependency] = &[
@@ -177,7 +122,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["lsattr"],
         fedora_package: "e2fsprogs",
         arch_package: "e2fsprogs",
-        debian_package: "e2fsprogs",
+        pop_package: "e2fsprogs",
         required: true,
     },
     Dependency {
@@ -185,7 +130,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["ps"],
         fedora_package: "procps-ng",
         arch_package: "procps-ng",
-        debian_package: "procps",
+        pop_package: "procps",
         required: true,
     },
     Dependency {
@@ -193,7 +138,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["qemu-system-x86_64"],
         fedora_package: "qemu-kvm",
         arch_package: "qemu-desktop",
-        debian_package: "qemu-system-x86",
+        pop_package: "qemu-system-x86",
         required: true,
     },
     Dependency {
@@ -201,7 +146,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["qemu-img"],
         fedora_package: "qemu-img",
         arch_package: "qemu-img",
-        debian_package: "qemu-utils",
+        pop_package: "qemu-utils",
         required: true,
     },
     Dependency {
@@ -209,7 +154,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["virsh"],
         fedora_package: "libvirt-client libvirt-daemon-kvm",
         arch_package: "libvirt",
-        debian_package: "libvirt-clients libvirt-daemon-system",
+        pop_package: "libvirt-clients libvirt-daemon-system",
         required: true,
     },
     Dependency {
@@ -217,7 +162,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["gnome-boxes"],
         fedora_package: "gnome-boxes",
         arch_package: "gnome-boxes",
-        debian_package: "gnome-boxes",
+        pop_package: "gnome-boxes",
         required: true,
     },
     Dependency {
@@ -225,7 +170,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["nmcli"],
         fedora_package: "NetworkManager",
         arch_package: "networkmanager",
-        debian_package: "network-manager",
+        pop_package: "network-manager",
         required: true,
     },
     Dependency {
@@ -233,7 +178,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["systemctl"],
         fedora_package: "systemd",
         arch_package: "systemd",
-        debian_package: "systemd",
+        pop_package: "systemd",
         required: true,
     },
     Dependency {
@@ -241,7 +186,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["busctl"],
         fedora_package: "systemd",
         arch_package: "systemd",
-        debian_package: "systemd",
+        pop_package: "systemd",
         required: true,
     },
     Dependency {
@@ -249,7 +194,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["gpg"],
         fedora_package: "gnupg2",
         arch_package: "gnupg",
-        debian_package: "gnupg",
+        pop_package: "gnupg",
         required: true,
     },
     Dependency {
@@ -257,7 +202,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["curl"],
         fedora_package: "curl",
         arch_package: "curl",
-        debian_package: "curl",
+        pop_package: "curl",
         required: true,
     },
     Dependency {
@@ -265,7 +210,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["7z", "7zz", "7za"],
         fedora_package: "7zip",
         arch_package: "7zip",
-        debian_package: "7zip",
+        pop_package: "7zip",
         required: true,
     },
     Dependency {
@@ -273,7 +218,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["tar"],
         fedora_package: "tar",
         arch_package: "tar",
-        debian_package: "tar",
+        pop_package: "tar",
         required: true,
     },
     Dependency {
@@ -281,7 +226,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["xz"],
         fedora_package: "xz",
         arch_package: "xz",
-        debian_package: "xz-utils",
+        pop_package: "xz-utils",
         required: true,
     },
     Dependency {
@@ -289,7 +234,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["chattr"],
         fedora_package: "e2fsprogs",
         arch_package: "e2fsprogs",
-        debian_package: "e2fsprogs",
+        pop_package: "e2fsprogs",
         required: true,
     },
     Dependency {
@@ -297,7 +242,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["ip"],
         fedora_package: "iproute",
         arch_package: "iproute2",
-        debian_package: "iproute2",
+        pop_package: "iproute2",
         required: true,
     },
     Dependency {
@@ -305,7 +250,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["pidof"],
         fedora_package: "psmisc",
         arch_package: "procps-ng",
-        debian_package: "sysvinit-utils",
+        pop_package: "sysvinit-utils",
         required: true,
     },
     Dependency {
@@ -313,7 +258,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["sudo"],
         fedora_package: "sudo",
         arch_package: "sudo",
-        debian_package: "sudo",
+        pop_package: "sudo",
         required: true,
     },
     Dependency {
@@ -321,7 +266,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["stdbuf"],
         fedora_package: "coreutils",
         arch_package: "coreutils",
-        debian_package: "coreutils",
+        pop_package: "coreutils",
         required: true,
     },
     Dependency {
@@ -329,7 +274,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["getent"],
         fedora_package: "glibc-common",
         arch_package: "glibc",
-        debian_package: "libc-bin",
+        pop_package: "libc-bin",
         required: true,
     },
     Dependency {
@@ -337,7 +282,7 @@ pub const DEPENDENCIES: &[Dependency] = &[
         alternatives: &["virt-manager"],
         fedora_package: "virt-manager virt-viewer",
         arch_package: "virt-manager virt-viewer",
-        debian_package: "virt-manager virt-viewer",
+        pop_package: "virt-manager virt-viewer",
         required: false,
     },
 ];
@@ -425,7 +370,6 @@ pub struct Host {
     pub os: OsRelease,
     pub architecture: String,
     pub systemd: bool,
-    pub runit: bool,
     pub desktop_session: Option<String>,
     pub native_boxes: bool,
     pub services: Vec<Service>,
@@ -444,9 +388,6 @@ impl Host {
     }
 
     pub fn libvirt_activation_hint(&self) -> Option<String> {
-        if self.runit {
-            return Some("sudo ln -s /etc/sv/libvirtd /var/service/  # only if not enabled; also enable virtlogd and virtlockd".to_owned());
-        }
         // Prefer the mode already active. Do not suggest enabling both daemon families.
         let usable = |unit: &str| self.service(unit).is_some_and(Service::available);
         let active = |unit: &str| self.service(unit).is_some_and(Service::active);
@@ -490,12 +431,7 @@ impl Host {
             .or_else(|| probe.read("/usr/lib/os-release"))
             .unwrap_or_default();
         let os = OsRelease::parse(&release);
-        let config = probe
-            .read(&format!("{}/qemu.conf", os.libvirt_config_dir()))
-            .unwrap_or_default();
-        let runit = probe
-            .read("/proc/1/comm")
-            .is_some_and(|s| s.trim() == "runit");
+        let config = probe.read("/etc/libvirt/qemu.conf").unwrap_or_default();
         let selinux = match probe
             .read("/sys/fs/selinux/enforce")
             .as_deref()
@@ -536,18 +472,6 @@ impl Host {
         ]
         .into_iter()
         .map(|unit| {
-            if runit {
-                let name = unit.strip_suffix(".service");
-                let available = name.is_some_and(|n| probe.exists(&format!("/etc/sv/{n}")));
-                let active = name
-                    .and_then(|n| probe.output("sv", &["status", &format!("/var/service/{n}")]))
-                    .is_some_and(|s| s.starts_with("run:"));
-                return Service {
-                    unit: unit.to_owned(),
-                    load_state: if available { "loaded" } else { "not-found" }.to_owned(),
-                    active_state: if active { "active" } else { "inactive" }.to_owned(),
-                };
-            }
             let text = probe
                 .output(
                     "systemctl",
@@ -587,13 +511,10 @@ impl Host {
         let configured_group = group.as_deref().and_then(|g| resolve("group", g));
         let configured = configured_user.is_some() && configured_group.is_some();
         // Candidates are for diagnostics only. Never use these guesses for chown.
-        let candidates = match os.distribution {
-            Distribution::Fedora | Distribution::Alma | Distribution::Rocky => {
-                ["qemu", "libvirt-qemu", "libvirt"]
-            }
-            Distribution::Void => ["libvirt", "qemu", "libvirt-qemu"],
-            Distribution::Nixos => ["qemu-libvirtd", "qemu", "libvirt-qemu"],
-            _ => ["libvirt-qemu", "qemu", "libvirt"],
+        let candidates = if os.distribution == Distribution::Fedora {
+            ["qemu", "libvirt-qemu"]
+        } else {
+            ["libvirt-qemu", "qemu"]
         };
         let qemu = QemuIdentity {
             user: if user.is_some() {
@@ -604,33 +525,21 @@ impl Host {
             group: if group.is_some() {
                 configured_group
             } else {
-                ["qemu", "libvirt-qemu", "qemu-libvirtd", "libvirt", "kvm"]
+                ["qemu", "libvirt-qemu", "kvm"]
                     .iter()
                     .find_map(|g| resolve("group", g))
             },
             configured,
         };
         let native_boxes = match os.distribution {
-            Distribution::Fedora | Distribution::Alma | Distribution::Rocky => {
-                probe.output("rpm", &["-q", "gnome-boxes"]).is_some()
-            }
-            Distribution::Debian
-            | Distribution::Ubuntu
-            | Distribution::Pop
-            | Distribution::Mint
-            | Distribution::Zorin => probe
+            Distribution::Fedora => probe.output("rpm", &["-q", "gnome-boxes"]).is_some(),
+            Distribution::Pop => probe
                 .output(
                     "dpkg-query",
                     &["-W", "-f=${db:Status-Status}", "gnome-boxes"],
                 )
                 .is_some_and(|status| status.trim() == "installed"),
-            Distribution::Arch | Distribution::Manjaro => {
-                probe.output("pacman", &["-Q", "gnome-boxes"]).is_some()
-            }
-            Distribution::Void => probe
-                .output("xbps-query", &["-p", "state", "gnome-boxes"])
-                .is_some_and(|s| s.trim() == "installed"),
-            Distribution::Nixos => probe.exists("/run/current-system/sw/bin/gnome-boxes"),
+            Distribution::Arch => probe.output("pacman", &["-Q", "gnome-boxes"]).is_some(),
             Distribution::Unknown => false,
         };
         Self {
@@ -642,7 +551,6 @@ impl Host {
                 .trim()
                 .to_owned(),
             systemd: probe.exists("/run/systemd/system"),
-            runit,
             desktop_session: probe
                 .environment("XDG_SESSION_TYPE")
                 .filter(|s| s == "x11" || s == "wayland")
@@ -672,20 +580,9 @@ impl Host {
             qemu,
             tools: DEPENDENCIES
                 .iter()
-                .map(|dependency| {
-                    let mut dependency = *dependency;
-                    let executable = if runit && dependency.name == "systemctl" {
-                        probe.executable(&["sv"])
-                    } else {
-                        probe.executable(dependency.alternatives)
-                    };
-                    if runit && dependency.name == "D-Bus busctl" {
-                        dependency.required = false;
-                    }
-                    Tool {
-                        dependency,
-                        executable,
-                    }
+                .map(|dependency| Tool {
+                    dependency: *dependency,
+                    executable: probe.executable(dependency.alternatives),
                 })
                 .collect(),
         }
@@ -767,11 +664,12 @@ mod tests {
     fn distributions_and_derivatives_are_distinguished() {
         for (id, expected) in [
             ("fedora", Distribution::Fedora),
-            ("debian", Distribution::Debian),
-            ("ubuntu", Distribution::Ubuntu),
+            ("debian", Distribution::Unknown),
+            ("ubuntu", Distribution::Unknown),
             ("pop", Distribution::Pop),
             ("arch", Distribution::Arch),
-            ("manjaro", Distribution::Manjaro),
+            ("cachyos", Distribution::Arch),
+            ("manjaro", Distribution::Unknown),
             ("mint", Distribution::Unknown),
         ] {
             let os = OsRelease::parse(&format!(
@@ -786,15 +684,42 @@ mod tests {
     }
 
     #[test]
+    fn excluded_targets_do_not_inherit_support_or_package_hints() {
+        let zip = *DEPENDENCIES.iter().find(|d| d.name == "7z").unwrap();
+        for id in [
+            "debian",
+            "ubuntu",
+            "manjaro",
+            "linuxmint",
+            "zorin",
+            "almalinux",
+            "rocky",
+            "void",
+            "nixos",
+        ] {
+            let os = OsRelease::parse(&format!("ID={id}\nID_LIKE=arch ubuntu debian"));
+            assert_eq!(os.distribution, Distribution::Unknown);
+            assert_eq!(os.install_hint(zip), None);
+            let fixture = Fixture::default()
+                .file("/etc/os-release", &format!("ID={id}"))
+                .command(
+                    "dpkg-query",
+                    &["-W", "-f=${db:Status-Status}", "gnome-boxes"],
+                    "installed",
+                )
+                .command("pacman", &["-Q", "gnome-boxes"], "gnome-boxes 50");
+            assert!(!Host::probe(&fixture).native_boxes);
+        }
+    }
+
+    #[test]
     fn package_hints_follow_distribution_and_release() {
         let zip = *DEPENDENCIES.iter().find(|d| d.name == "7z").unwrap();
         for (release, expected) in [
             ("ID=fedora\nVERSION_ID=44", "sudo dnf install 7zip"),
-            ("ID=debian\nVERSION_ID=12", "sudo apt install p7zip-full"),
-            ("ID=ubuntu\nVERSION_ID=24.04", "sudo apt install 7zip"),
             ("ID=pop\nVERSION_ID=22.04", "sudo apt install p7zip-full"),
             ("ID=arch", "sudo pacman -S --needed 7zip"),
-            ("ID=manjaro", "sudo pacman -S --needed 7zip"),
+            ("ID=cachyos", "sudo pacman -S --needed 7zip"),
         ] {
             assert_eq!(
                 OsRelease::parse(release).install_hint(zip).as_deref(),
@@ -811,7 +736,7 @@ mod tests {
     fn active_socket_is_detected_without_running_daemon() {
         let host = Host::probe(
             &Fixture::default()
-                .file("/usr/lib/os-release", "ID=debian\nVERSION_ID=13")
+                .file("/usr/lib/os-release", "ID=pop\nVERSION_ID=24.04")
                 .file("/run/systemd/system", "")
                 .service("virtqemud.socket", "active")
                 .service("virtqemud.service", "inactive")
@@ -819,7 +744,7 @@ mod tests {
                 .service("libvirtd.service", "inactive")
                 .command("uname", &["-m"], "x86_64\n"),
         );
-        assert_eq!(host.os.distribution, Distribution::Debian);
+        assert_eq!(host.os.distribution, Distribution::Pop);
         assert!(host.systemd);
         assert!(host.service("virtqemud.socket").unwrap().active());
         let hint = host.libvirt_activation_hint().unwrap();
@@ -841,7 +766,7 @@ mod tests {
     fn native_boxes_requires_installed_package_status() {
         let base = || {
             Fixture::default()
-                .file("/etc/os-release", "ID=ubuntu\nVERSION_ID=24.04")
+                .file("/etc/os-release", "ID=pop\nVERSION_ID=24.04")
                 .file("gnome-boxes", "")
         };
         let args = ["-W", "-f=${db:Status-Status}", "gnome-boxes"];
@@ -852,7 +777,7 @@ mod tests {
 
     #[test]
     fn rolling_hosts_detect_native_boxes_and_specific_package_hints() {
-        for id in ["arch", "manjaro"] {
+        for id in ["arch", "cachyos"] {
             let fixture = Fixture::default().file("/etc/os-release", &format!("ID={id}"));
             assert!(!Host::probe(&fixture).native_boxes);
             let fixture = fixture.command("pacman", &["-Q", "gnome-boxes"], "gnome-boxes 49.0-1");
@@ -959,87 +884,6 @@ mod tests {
                 .executable
                 .as_deref(),
             Some("7zz")
-        );
-    }
-    #[test]
-    fn void_runit_snapshot_resolves_services_and_qemu_account() {
-        let host = Host::probe(
-            &Fixture::default()
-                .file("/etc/os-release", "ID=void")
-                .file("/proc/1/comm", "runit\n")
-                .file("/etc/sv/libvirtd", "")
-                .file("/etc/sv/NetworkManager", "")
-                .command(
-                    "sv",
-                    &["status", "/var/service/libvirtd"],
-                    "run: libvirtd: (pid 42) 1s",
-                )
-                .command(
-                    "sv",
-                    &["status", "/var/service/NetworkManager"],
-                    "run: NetworkManager: (pid 43) 1s",
-                )
-                .command(
-                    "getent",
-                    &["passwd", "libvirt"],
-                    "libvirt:x:100:100::/:/bin/false",
-                )
-                .command("xbps-query", &["-p", "state", "gnome-boxes"], "installed"),
-        );
-        assert!(host.runit);
-        assert!(!host.systemd);
-        assert!(host.service("libvirtd.service").unwrap().active());
-        assert!(!host.service("libvirtd.socket").unwrap().available());
-        assert!(host.native_boxes);
-        assert_eq!(host.qemu.user.as_deref(), Some("libvirt"));
-        assert!(
-            host.libvirt_activation_hint()
-                .unwrap()
-                .contains("/etc/sv/libvirtd")
-        );
-        let bus = host
-            .tools
-            .iter()
-            .find(|t| t.dependency.name == "D-Bus busctl")
-            .unwrap();
-        assert!(!bus.dependency.required);
-    }
-
-    #[test]
-    fn nixos_uses_declared_libvirt_layout_and_account() {
-        let host = Host::probe(
-            &Fixture::default()
-                .file("/etc/os-release", "ID=nixos")
-                .file(
-                    "/var/lib/libvirt/qemu.conf",
-                    "user = 'qemu-libvirtd'\ngroup = 'qemu-libvirtd'",
-                )
-                .command(
-                    "getent",
-                    &["passwd", "qemu-libvirtd"],
-                    "qemu-libvirtd:x:100:100::/:/bin/false",
-                )
-                .command(
-                    "getent",
-                    &["group", "qemu-libvirtd"],
-                    "qemu-libvirtd:x:100:",
-                ),
-        );
-        assert_eq!(host.os.libvirt_config_dir(), "/var/lib/libvirt");
-        assert!(host.qemu.configured);
-        assert_eq!(
-            OsRelease::parse("ID=void").libvirt_config_dir(),
-            "/etc/libvirt"
-        );
-        for id in ["linuxmint", "zorin", "almalinux", "rocky", "void", "nixos"] {
-            assert_ne!(
-                OsRelease::parse(&format!("ID={id}")).distribution,
-                Distribution::Unknown
-            );
-        }
-        assert_eq!(
-            OsRelease::parse("ID=other\nID_LIKE=nixos").distribution,
-            Distribution::Unknown
         );
     }
 }
