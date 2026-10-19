@@ -1295,12 +1295,13 @@ mod tests {
         )
         .unwrap();
         let forge = Forge::open_paths(paths).unwrap();
+        let mode = forge.network_mode().unwrap();
         let created = forge
             .create(Profile::Tsurugi, None, true, &progress::noop)
             .unwrap();
         assert_eq!(created[0].name, "tsurugi");
         assert!(!created[0].xml.contains("<interface"));
-        crate::network::check_domain(&created[0].xml, Role::Isolated, Mode::Standard).unwrap();
+        crate::network::check_domain(&created[0].xml, Role::Isolated, mode).unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1333,13 +1334,17 @@ mod tests {
         )
         .unwrap();
         let forge = Forge::open_paths(paths).unwrap();
+        let mode = forge.network_mode().unwrap();
         let created = forge
             .create(Profile::Kali, None, true, &progress::noop)
             .unwrap();
         assert_eq!(created[0].name, "kali");
-        assert!(created[0].xml.contains("forge-standard"));
+        assert_eq!(
+            created[0].xml.contains("forge-standard"),
+            mode == Mode::Standard
+        );
         assert!(created[0].xml.contains("osint-clearnet"));
-        crate::network::check_domain(&created[0].xml, Role::OsintClearnet, Mode::Standard).unwrap();
+        crate::network::check_domain(&created[0].xml, Role::OsintClearnet, mode).unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1372,12 +1377,13 @@ mod tests {
         )
         .unwrap();
         let forge = Forge::open_paths(paths).unwrap();
+        let mode = forge.network_mode().unwrap();
         let created = forge
             .create(Profile::Sift, None, true, &progress::noop)
             .unwrap();
         assert_eq!(created[0].name, "sift");
         assert!(!created[0].xml.contains("<interface"));
-        crate::network::check_domain(&created[0].xml, Role::Isolated, Mode::Standard).unwrap();
+        crate::network::check_domain(&created[0].xml, Role::Isolated, mode).unwrap();
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1424,14 +1430,15 @@ mod tests {
         )
         .unwrap();
         let forge = Forge::open_paths(paths).unwrap();
+        let mode = forge.network_mode().unwrap();
         let created = forge
             .create(Profile::Whonix, None, true, &progress::noop)
             .unwrap();
         assert_eq!(created.len(), 2);
         assert_eq!(created[0].name, "whonix-gateway");
         assert_eq!(created[1].name, "whonix-workstation");
-        crate::network::check_domain(&created[0].xml, Role::WhonixGw, Mode::Standard).unwrap();
-        crate::network::check_domain(&created[1].xml, Role::WhonixWs, Mode::Standard).unwrap();
+        crate::network::check_domain(&created[0].xml, Role::WhonixGw, mode).unwrap();
+        crate::network::check_domain(&created[1].xml, Role::WhonixWs, mode).unwrap();
         assert!(created[0].xml.contains("forge-whonix"));
         assert!(!created[0].xml.contains("type='user'"));
         let _ = fs::remove_dir_all(dir);

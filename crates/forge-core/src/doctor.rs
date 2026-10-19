@@ -76,8 +76,7 @@ pub fn run() -> Result<DoctorReport> {
             fix: Some(format!(
                 "{}\nsudo usermod -aG libvirt \"$USER\"  # then log out",
                 host.libvirt_activation_hint().unwrap_or_else(|| {
-                    "Install the system libvirt daemon and inspect the host service manager"
-                        .to_owned()
+                    "Install the system libvirt daemon and inspect its systemd units".to_owned()
                 })
             )),
         }),
@@ -120,22 +119,14 @@ fn distribution_check(os: &OsRelease) -> Check {
             CheckStatus::Fail,
             format!("{} — Forge requires Fedora 44 or newer", os.pretty_name),
         ),
-        Distribution::Debian
-        | Distribution::Ubuntu
-        | Distribution::Pop
-        | Distribution::Mint
-        | Distribution::Zorin
-        | Distribution::Alma
-        | Distribution::Rocky
-        | Distribution::Void
-        | Distribution::Nixos => (
+        Distribution::Pop => (
             CheckStatus::Ok,
             format!(
                 "{} — recognized port target; runtime support checked separately",
                 os.pretty_name
             ),
         ),
-        Distribution::Arch | Distribution::Manjaro => (
+        Distribution::Arch => (
             CheckStatus::Ok,
             format!(
                 "{} — recognized rolling target; fully update with pacman -Syu, then verify host/security readiness",
@@ -157,7 +148,7 @@ fn distribution_check(os: &OsRelease) -> Check {
         name: "Host".to_owned(),
         detail,
         fix: (status == CheckStatus::Fail).then(|| {
-            "Use a recognized distribution and inspect its port readiness and confinement checks.".to_owned()
+            "Use Fedora 44+, Pop!_OS 24.04 or an Arch-family target (Arch/CachyOS).".to_owned()
         }),
     }
 }
@@ -177,18 +168,14 @@ fn host_checks(host: &Host) -> Vec<Check> {
             .then(|| "Forge guests require an x86_64 host.".to_owned()),
     });
     checks.push(Check {
-        status: if host.systemd || host.runit {
+        status: if host.systemd {
             CheckStatus::Ok
         } else {
             CheckStatus::Fail
         },
-        name: if host.runit { "runit" } else { "systemd" }.to_owned(),
-        detail: if host.systemd || host.runit {
-            if host.runit {
-                "runit running"
-            } else {
-                "systemd running"
-            }
+        name: "systemd".to_owned(),
+        detail: if host.systemd {
+            "running"
         } else {
             "not detected as host service manager"
         }
@@ -214,7 +201,7 @@ fn host_checks(host: &Host) -> Vec<Check> {
     checks.push(Check {
         status: if nm_active { CheckStatus::Ok } else { CheckStatus::Fail },
         name: "NetworkManager service".to_owned(), detail: if nm_active { "active" } else { "not active or cannot be inspected; this port requires NetworkManager" }.to_owned(),
-        fix: (!nm_active).then(|| if host.runit { "Inspect sv status /var/service/NetworkManager; enable the runit service and use NetworkManager.".to_owned() } else { "Inspect systemctl status NetworkManager.service; configure the desktop to use NetworkManager.".to_owned() }),
+        fix: (!nm_active).then(|| "Inspect systemctl status NetworkManager.service; configure the desktop to use NetworkManager.".to_owned()),
     });
     let daemon_units: Vec<_> = host
         .services
@@ -285,34 +272,19 @@ fn host_checks(host: &Host) -> Vec<Check> {
             },
         });
     }
-    if matches!(
-        host.os.distribution,
-        Distribution::Debian
-            | Distribution::Ubuntu
-            | Distribution::Pop
-            | Distribution::Arch
-            | Distribution::Manjaro
-            | Distribution::Mint
-            | Distribution::Zorin
-            | Distribution::Alma
-            | Distribution::Rocky
-            | Distribution::Void
-            | Distribution::Nixos
-    ) {
+    if matches!(host.os.distribution, Distribution::Pop | Distribution::Arch) {
         checks.push(Check {
             status: if host.os.distribution == Distribution::Pop && host.os.version == "24.04" {
                 CheckStatus::Warn
             } else {
                 CheckStatus::Fail
             }, name: "port readiness".to_owned(),
-            detail: if matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro) {
-                "Rolling target recognized. Stock Arch libvirt disables AppArmor/SELinux drivers; a compatible confined libvirt build is required. Manjaro capabilities must be checked separately; firewall integration and live VM validation remain pending.".to_owned()
-            } else if matches!(host.os.distribution, Distribution::Void | Distribution::Nixos | Distribution::Alma | Distribution::Rocky | Distribution::Mint | Distribution::Zorin) {
-                "Experimental port: native dependency resolution, security confinement and physical start/stop validation are pending; run all host checks before preparing guests.".to_owned()
+            detail: if matches!(host.os.distribution, Distribution::Arch) {
+                "Rolling target recognized. Stock Arch libvirt disables AppArmor/SELinux drivers; a compatible confined libvirt build is required. CachyOS capabilities must be checked separately; firewall integration and live VM validation remain pending.".to_owned()
             } else {
                 "Standard mode was exercised on Pop!_OS 24.04 with AppArmor, Boxes and Whonix; firewall integration across distributions and dedicated A/B hardware validation remain pending.".to_owned()
             },
-            fix: matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro).then(|| "Use an AppArmor-enabled libvirt build with virt-aa-helper profiles; inspect virsh capabilities before setup.".to_owned()),
+            fix: matches!(host.os.distribution, Distribution::Arch).then(|| "Use an AppArmor-enabled libvirt build with virt-aa-helper profiles; inspect virsh capabilities before setup.".to_owned()),
         });
     }
     checks
@@ -320,10 +292,7 @@ fn host_checks(host: &Host) -> Vec<Check> {
 
 fn security_checks(host: &Host) -> Vec<Check> {
     let selinux_ok = host.security.selinux == SecurityState::Enforcing;
-    let fedora = matches!(
-        host.os.distribution,
-        Distribution::Fedora | Distribution::Alma | Distribution::Rocky
-    );
+    let fedora = host.os.distribution == Distribution::Fedora;
     vec![
         Check {
             status: if selinux_ok {
@@ -848,7 +817,6 @@ mod tests {
             os: OsRelease::parse(release),
             architecture: "x86_64".to_owned(),
             systemd: true,
-            runit: false,
             desktop_session: Some("wayland".to_owned()),
             native_boxes: true,
             services: vec![
@@ -886,7 +854,7 @@ mod tests {
 
     #[test]
     fn port_targets_are_recognized_but_not_falsely_ready() {
-        for id in ["debian", "ubuntu", "pop", "arch", "manjaro"] {
+        for id in ["pop", "arch", "cachyos"] {
             let host = snapshot(&format!("ID={id}\nVERSION_ID=24.04"));
             let checks = host_checks(&host);
             assert_eq!(checks[0].status, CheckStatus::Ok);
@@ -906,6 +874,26 @@ mod tests {
             );
             assert_eq!(report.ok(), id == "pop");
             assert!(format_report(&report).contains("firewall integration"));
+        }
+    }
+
+    #[test]
+    fn removed_ports_fail_distribution_check() {
+        for id in [
+            "debian",
+            "ubuntu",
+            "manjaro",
+            "linuxmint",
+            "zorin",
+            "almalinux",
+            "rocky",
+            "void",
+            "nixos",
+        ] {
+            assert_eq!(
+                evaluate_os_release(&format!("ID={id}\nID_LIKE=arch ubuntu debian")).status,
+                CheckStatus::Fail
+            );
         }
     }
 
@@ -946,7 +934,7 @@ mod tests {
 
     #[test]
     fn missing_tools_have_apt_hints_without_fedora_commands() {
-        let mut host = snapshot("ID=ubuntu\nVERSION_ID=24.04");
+        let mut host = snapshot("ID=pop\nVERSION_ID=24.04");
         for tool in &mut host.tools {
             tool.executable = None;
         }

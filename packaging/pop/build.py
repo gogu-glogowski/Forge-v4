@@ -72,7 +72,7 @@ def main():
         copy(binary, tree / 'usr/bin/forge', 0o755)
         doc = tree / 'usr/share/doc/forge'
         copy(REPO / 'README.md', doc / 'README.md')
-        copy(REPO / 'packaging/debian/README.md', doc / 'README.Debian')
+        copy(REPO / 'packaging/pop/README.md', doc / 'README.Pop_OS')
         copy(REPO / 'LICENSE', doc / 'copyright')
         doc.joinpath('changelog.gz').write_bytes(gzip.compress((REPO / 'CHANGELOG.md').read_bytes(), mtime=0))
         for name in ['CREDITS.md', 'LICENSE-CC-BY-4.0.txt', 'manifest.json']:
