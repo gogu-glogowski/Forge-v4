@@ -12,7 +12,7 @@ use forge_core::{APP_NAME, DongleLink, Forge, ForgeError, Profile, format_list, 
 #[command(
     name = "forge",
     version,
-    about = "Forge 4.2.0 — KVM lab with standard or dedicated networking",
+    about = "Forge 4.2.2 — KVM lab with standard or dedicated networking",
     long_about = None,
     arg_required_else_help = true
 )]
@@ -30,10 +30,20 @@ enum Commands {
     },
     /// Download and verify an upstream image into an immutable base
     Pull { profile: String },
-    /// Prepare all bases and default VMs, with optional local background music
+    /// Prepare selected bases and default VMs, with optional local background music
     Prepare {
-        #[arg(long, required = true)]
+        #[arg(
+            long,
+            required_unless_present = "profiles",
+            conflicts_with = "profiles"
+        )]
         all: bool,
+        /// Comma-separated selection; Whonix always includes gateway and workstation
+        #[arg(long, value_delimiter = ',', num_args = 1, value_parser = ["tsurugi", "kali", "whonix", "sift"])]
+        profiles: Vec<String>,
+        /// Only download and verify bases; do not configure hooks, networks or VMs
+        #[arg(long)]
+        images_only: bool,
         /// Local SANS OVA; otherwise unavailable SIFT is explicitly skipped
         #[arg(long)]
         sift_ova: Option<std::path::PathBuf>,
@@ -165,8 +175,10 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
             Ok(())
         }
         Commands::Prepare {
-            all: _,
+            all,
+            profiles,
             sift_ova,
+            images_only,
             no_music,
             music_dir,
         } => {
@@ -191,7 +203,30 @@ fn run(cli: Cli) -> Result<(), ForgeError> {
                 music.poll();
                 output(event);
             };
-            let report = forge.prepare_all(sift_ova.as_deref(), &progress)?;
+            let report = if images_only {
+                let selected = if all {
+                    vec![
+                        Profile::Tsurugi,
+                        Profile::Kali,
+                        Profile::Whonix,
+                        Profile::Sift,
+                    ]
+                } else {
+                    profiles
+                        .iter()
+                        .map(|p| p.parse())
+                        .collect::<Result<Vec<Profile>, _>>()?
+                };
+                forge.download_selected(&selected, sift_ova.as_deref(), &progress)?
+            } else if all {
+                forge.prepare_all(sift_ova.as_deref(), &progress)?
+            } else {
+                let profiles = profiles
+                    .iter()
+                    .map(|p| p.parse())
+                    .collect::<Result<Vec<Profile>, _>>()?;
+                forge.prepare_selected(&profiles, sift_ova.as_deref(), &progress)?
+            };
             drop(progress);
             println!(
                 "Prepared: {}",

@@ -220,7 +220,7 @@ pub fn standard_nat_ok(xml: &str, name: &str) -> bool {
         && forwards.len() == 1
         && forwards[0].attribute("mode") == Some("nat")
         && forwards[0].attribute("dev").is_none()
-        && !forwards[0].children().any(|n| n.is_element())
+        && default_nat_children(forwards[0])
         && ips.len() == 1
         && ips[0].attribute("address") == Some(expected_ip)
         && ips[0].attribute("netmask") == Some("255.255.255.0")
@@ -229,6 +229,28 @@ pub fn standard_nat_ok(xml: &str, name: &str) -> bool {
         && !root
             .children()
             .any(|n| matches!(n.tag_name().name(), "route" | "virtualport" | "portgroup"))
+}
+
+// libvirt materializes this default NAT port range in net-dumpxml.
+// Accept only that normalization, not arbitrary forwarding extensions.
+fn default_nat_children(forward: roxmltree::Node<'_, '_>) -> bool {
+    let children: Vec<_> = forward.children().filter(|n| n.is_element()).collect();
+    if children.is_empty() {
+        return true;
+    }
+    if children.len() != 1
+        || !children[0].has_tag_name("nat")
+        || children[0].attributes().len() != 0
+    {
+        return false;
+    }
+    let ports: Vec<_> = children[0].children().filter(|n| n.is_element()).collect();
+    ports.len() == 1
+        && ports[0].has_tag_name("port")
+        && ports[0].attributes().len() == 2
+        && ports[0].attribute("start") == Some("1024")
+        && ports[0].attribute("end") == Some("65535")
+        && !ports[0].children().any(|n| n.is_element())
 }
 
 pub fn private_ok(xml: &str) -> bool {
@@ -281,6 +303,24 @@ mod tests {
                 ),
                 name
             ));
+        }
+    }
+    #[test]
+    fn standard_nat_accepts_only_libvirt_default_port_normalization() {
+        for name in [STANDARD_NET, WAN_NET] {
+            let xml = standard_nat_xml(name).replace(
+                "<forward mode='nat'/>",
+                "<forward mode='nat'><nat><port start='1024' end='65535'/></nat></forward>",
+            );
+            assert!(standard_nat_ok(&xml, name));
+            for bad in [
+                xml.replace("start='1024'", "start='1'"),
+                xml.replace("<nat>", "<nat ipv6='yes'>"),
+                xml.replace("</nat>", "<address start='192.0.2.1'/></nat>"),
+                xml.replace("</forward>", "<interface dev='eth0'/></forward>"),
+            ] {
+                assert!(!standard_nat_ok(&bad, name));
+            }
         }
     }
     #[test]

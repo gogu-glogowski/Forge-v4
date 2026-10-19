@@ -18,8 +18,8 @@ Desktop **x86_64**, systemd and NetworkManager. Choose the native package below.
 | <img src="assets/distros/ubuntu.png" height="28" alt="Ubuntu logo"> **Ubuntu** | 24.04+ | [DEB](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge_4.2.0-1_amd64.deb) | Live validation pending |
 | <img src="assets/distros/pop-os.svg" height="28" alt="Pop!_OS logo"> **Pop!_OS** | 24.04 | [DEB](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge_4.2.0-1_amd64.deb) | Live Standard-mode checks passed |
 | <img src="assets/distros/fedora.svg" height="28" alt="Fedora logo"> **Fedora** | 44+ | [RPM](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge-4.2.0-1.x86_64.rpm) | Native desktop validation pending |
-| <img src="assets/distros/arch.svg" height="28" alt="Arch Linux logo"> **Arch Linux** | Fully updated rolling release | [PKG.TAR.ZST](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge-4.2.0-1-x86_64.pkg.tar.zst) | Requires confined libvirt; see below |
-| <img src="assets/distros/manjaro.svg" height="28" alt="Manjaro logo"> **Manjaro** | Fully updated rolling release | [PKG.TAR.ZST](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.0/forge-4.2.0-1-x86_64.pkg.tar.zst) | Check libvirt confinement; validation pending |
+| <img src="assets/distros/arch.svg" height="28" alt="Arch Linux logo"> **Arch Linux** | Fully updated rolling release | [PKG.TAR.ZST](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.2/forge-lab-4.2.2-5-x86_64.pkg.tar.zst) | 4.2.2-5 installer; native validation in progress |
+| <img src="assets/distros/manjaro.svg" height="28" alt="Manjaro logo"> **Manjaro** | Fully updated rolling release | [PKG.TAR.ZST](https://github.com/gogu-glogowski/Forge-v4/raw/refs/heads/main/packages/4.2.2/forge-lab-4.2.2-5-x86_64.pkg.tar.zst) | Check libvirt confinement; validation pending |
 
 [SHA-256 checksums](packages/4.2.0/SHA256SUMS) · [Logo sources](assets/distros/README.md)
 

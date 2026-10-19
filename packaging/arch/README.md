@@ -1,8 +1,8 @@
-# Arch Linux / Manjaro rolling packages
+# Arch Linux / Manjaro / CachyOS rolling packages
 
 Target: current, fully updated x86_64 Arch Linux or Manjaro with systemd,
 NetworkManager, KVM and enforcing AppArmor/SELinux through libvirt. `ID=arch` and
-`ID=manjaro` are recognized even when VERSION_ID is absent. Partial upgrades and
+`ID=manjaro` and `ID=cachyos` are recognized even when VERSION_ID is absent. Partial upgrades and
 arbitrary old rolling snapshots are not supported. Update with `sudo pacman -Syu`.
 
 ## Important confinement requirement
@@ -32,7 +32,7 @@ On the native target install `base-devel rust cargo python`, then from Forge:
 
 ```bash
 python3 packaging/arch/build.py
-sudo pacman -U ./dist/arch/forge-4.2.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./dist/arch/forge-lab-4.2.2-5-x86_64.pkg.tar.zst
 ```
 
 The builder generates a real checksum-pinned PKGBUILD and a source archive
@@ -43,13 +43,38 @@ binary format; no AUR upload is performed here.
 Arch does not install optdepends automatically; install `mpv` for music.
 Enable NetworkManager/libvirt and AppArmor according to the host configuration,
 join `libvirt,kvm` and log out/in. With guests stopped run `/usr/bin/forge setup`
-and `/usr/bin/forge prepare --all`. New labs use Standard NAT. A/B is deferred.
+and `/usr/bin/forge prepare --all`. New labs use Standard NAT. Physical A/B
+validation remains pending. For the complete guided installer, use `forge-install`.
 The package includes credits/manifest but streams audio from the Forge repository.
 
 No .install script is included: installation/removal does not alter groups,
-services, hooks, networks or VM data. `sudo pacman -R forge` preserves lab data
+services, hooks, networks or VM data. `sudo pacman -R forge-lab` preserves lab data
 and the independently activated hook. Check `type -a forge` for old manual copies.
 
 `--cross-host` exists only for isolated packaging tests: it skips makepkg's
 Arch-specific dependency checks. Such a build is not proof that an Arch/Manjaro
 host can run confined guests. For this local build, glibc >= 2.39 is required.
+
+## CachyOS validation
+
+CachyOS is recognized explicitly and uses pacman dependency hints and native
+GNOME Boxes detection. This does not certify the host for confined guests.
+Inspect its actual kernel, AppArmor profiles and libvirt capabilities; do not
+assume its packages match stock Arch. Run `forge dev doctor` as your desktop
+user on the host before setup. A sandbox without KVM/system D-Bus access cannot
+validate the native desktop or guest lifecycle.
+
+## Complete Arch-family installer (under native validation)
+
+See [Polish installer guide](install/README.PL.md). `forge-install` checks prerequisites, resumes host preparation when needed,
+verifies all automatic images, configures Standard/Extended networking and
+checks four stopped VMs. Host boot preparation currently requires Limine.
+They do not certify the port before actual guest/network tests.
+
+## Package identity
+
+The Arch package is named `forge-lab`; the executable remains `/usr/bin/forge`.
+The repository package `forge` belongs to ArrayFire and is unrelated. Do not
+install `forge` by name to obtain this lab. Both packages may coexist; no
+`provides`, `conflicts` or `replaces` alias claims the ArrayFire package name.
+Install the explicit local `forge-lab` package path printed by the builder.

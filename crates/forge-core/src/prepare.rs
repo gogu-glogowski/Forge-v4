@@ -11,6 +11,7 @@ pub struct PrepareReport {
 
 pub(crate) trait Backend {
     fn setup(&self) -> Result<()>;
+    fn check_stopped(&self) -> Result<()>;
     fn base_ready(&self, profile: Profile) -> bool;
     fn has_references(&self, profile: Profile) -> Result<bool>;
     fn pull(&self, profile: Profile, sift_ova: Option<&Path>, progress: &Progress) -> Result<()>;
@@ -23,6 +24,59 @@ pub(crate) fn run(
     sift_ova: Option<&Path>,
     progress: &Progress,
 ) -> Result<PrepareReport> {
+    run_selected(
+        backend,
+        &[
+            Profile::Tsurugi,
+            Profile::Kali,
+            Profile::Whonix,
+            Profile::Sift,
+        ],
+        sift_ova,
+        progress,
+    )
+}
+
+pub(crate) fn run_selected(
+    backend: &impl Backend,
+    profiles: &[Profile],
+    sift_ova: Option<&Path>,
+    progress: &Progress,
+) -> Result<PrepareReport> {
+    run_selected_stage(backend, profiles, sift_ova, progress, false)
+}
+
+pub(crate) fn download_selected(
+    backend: &impl Backend,
+    profiles: &[Profile],
+    sift_ova: Option<&Path>,
+    progress: &Progress,
+) -> Result<PrepareReport> {
+    run_selected_stage(backend, profiles, sift_ova, progress, true)
+}
+
+fn run_selected_stage(
+    backend: &impl Backend,
+    profiles: &[Profile],
+    sift_ova: Option<&Path>,
+    progress: &Progress,
+    images_only: bool,
+) -> Result<PrepareReport> {
+    if profiles.is_empty()
+        || profiles
+            .iter()
+            .enumerate()
+            .any(|(i, p)| profiles[..i].contains(p))
+    {
+        return Err(ForgeError::InvalidInput(
+            "select at least one profile, without duplicates".to_owned(),
+        ));
+    }
+    if sift_ova.is_some() && !profiles.contains(&Profile::Sift) {
+        return Err(ForgeError::InvalidInput(
+            "--sift-ova requires the sift profile".to_owned(),
+        ));
+    }
     if sift_ova.is_some_and(|path| !path.is_file()) {
         return Err(ForgeError::InvalidInput(
             "--sift-ova must point to an existing local OVA file".to_owned(),
@@ -30,22 +84,31 @@ pub(crate) fn run(
     }
     progress::message(
         progress,
-        "[1/5] Configuring Forge; guests must remain stopped",
+        format!(
+            "[1/{}] {}; guests must remain stopped",
+            profiles.len() + 1,
+            if images_only {
+                "Checking image stage"
+            } else {
+                "Configuring Forge"
+            }
+        ),
     );
-    backend.setup()?;
+    if images_only {
+        backend.check_stopped()?;
+    } else {
+        backend.setup()?;
+    }
     let mut report = PrepareReport::default();
-    for (index, profile) in [
-        Profile::Tsurugi,
-        Profile::Kali,
-        Profile::Whonix,
-        Profile::Sift,
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    for (index, profile) in profiles.iter().copied().enumerate() {
         progress::message(
             progress,
-            format!("[{}/5] Preparing {}", index + 2, profile.id()),
+            format!(
+                "[{}/{}] Preparing {}",
+                index + 2,
+                profiles.len() + 1,
+                profile.id()
+            ),
         );
         if backend.base_ready(profile) {
             progress::message(
@@ -70,7 +133,9 @@ pub(crate) fn run(
             backend.pull(profile, sift_ova, progress)?;
         }
         backend.verify(profile, progress)?;
-        backend.ensure_vms(profile, progress)?;
+        if !images_only {
+            backend.ensure_vms(profile, progress)?;
+        }
         report.prepared.push(profile);
     }
     progress::message(progress, "Preparation complete. VMs remain powered off.");
@@ -89,6 +154,10 @@ mod tests {
         fail_on: Option<Profile>,
     }
     impl Backend for Fake {
+        fn check_stopped(&self) -> Result<()> {
+            self.events.borrow_mut().push("check stopped".into());
+            Ok(())
+        }
         fn setup(&self) -> Result<()> {
             self.events.borrow_mut().push("setup".into());
             Ok(())
@@ -116,6 +185,100 @@ mod tests {
             Ok(())
         }
     }
+    #[test]
+    fn images_are_verified_before_any_hook_or_vm_operation() {
+        let backend = Fake::default();
+        let selected = [Profile::Tsurugi, Profile::Kali, Profile::Whonix];
+        let report = download_selected(&backend, &selected, None, &progress::noop).unwrap();
+        assert_eq!(report.prepared, selected);
+        let events = backend.events.borrow();
+        assert_eq!(events.first().unwrap(), "check stopped");
+        assert!(
+            !events
+                .iter()
+                .any(|e| e == "setup" || e.starts_with("ensure"))
+        );
+        for p in selected {
+            assert!(events.contains(&format!("verify {}", p.id())));
+        }
+    }
+
+    #[test]
+    fn download_failure_never_installs_hooks_or_creates_guests() {
+        let backend = Fake {
+            fail_on: Some(Profile::Kali),
+            ..Fake::default()
+        };
+        assert!(
+            download_selected(
+                &backend,
+                &[Profile::Tsurugi, Profile::Kali],
+                None,
+                &progress::noop
+            )
+            .is_err()
+        );
+        assert_eq!(*backend.ready.borrow(), [Profile::Tsurugi]);
+        assert!(
+            !backend
+                .events
+                .borrow()
+                .iter()
+                .any(|e| e == "setup" || e.starts_with("ensure"))
+        );
+    }
+
+    #[test]
+    fn selected_profiles_only_are_prepared_and_resume_without_repull() {
+        let backend = Fake::default();
+        let selected = [Profile::Kali, Profile::Whonix];
+        let report = run_selected(&backend, &selected, None, &progress::noop).unwrap();
+        assert_eq!(report.prepared, selected);
+        assert_eq!(report.skipped, Vec::<String>::new());
+        assert!(
+            !backend
+                .events
+                .borrow()
+                .iter()
+                .any(|e| e.contains("tsurugi") || e.contains("sift"))
+        );
+        backend.events.borrow_mut().clear();
+        run_selected(&backend, &selected, None, &progress::noop).unwrap();
+        assert!(
+            !backend
+                .events
+                .borrow()
+                .iter()
+                .any(|e| e.starts_with("pull"))
+        );
+        assert!(
+            backend
+                .events
+                .borrow()
+                .contains(&"verify whonix".to_owned())
+        );
+    }
+
+    #[test]
+    fn bad_selection_is_rejected_before_setup() {
+        for selected in [vec![], vec![Profile::Kali, Profile::Kali]] {
+            let backend = Fake::default();
+            assert!(run_selected(&backend, &selected, None, &progress::noop).is_err());
+            assert!(backend.events.borrow().is_empty());
+        }
+        let backend = Fake::default();
+        assert!(
+            run_selected(
+                &backend,
+                &[Profile::Kali],
+                Some(Path::new("/missing.ova")),
+                &progress::noop
+            )
+            .is_err()
+        );
+        assert!(backend.events.borrow().is_empty());
+    }
+
     #[test]
     fn all_prepares_three_profiles_and_explicitly_skips_sift() {
         let backend = Fake::default();

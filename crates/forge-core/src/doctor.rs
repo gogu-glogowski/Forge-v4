@@ -135,7 +135,7 @@ fn distribution_check(os: &OsRelease) -> Check {
                 os.pretty_name
             ),
         ),
-        Distribution::Arch | Distribution::Manjaro => (
+        Distribution::Arch | Distribution::Manjaro | Distribution::Cachyos => (
             CheckStatus::Ok,
             format!(
                 "{} — recognized rolling target; fully update with pacman -Syu, then verify host/security readiness",
@@ -292,6 +292,7 @@ fn host_checks(host: &Host) -> Vec<Check> {
             | Distribution::Pop
             | Distribution::Arch
             | Distribution::Manjaro
+            | Distribution::Cachyos
             | Distribution::Mint
             | Distribution::Zorin
             | Distribution::Alma
@@ -300,19 +301,24 @@ fn host_checks(host: &Host) -> Vec<Check> {
             | Distribution::Nixos
     ) {
         checks.push(Check {
-            status: if host.os.distribution == Distribution::Pop && host.os.version == "24.04" {
+            status: if (host.os.distribution == Distribution::Pop && host.os.version == "24.04")
+                || (matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro | Distribution::Cachyos)
+                    && crate::security::Policy::select(&host.security.advertised_models, host.security.selinux, host.security.apparmor).is_ok()) {
+                // A pending release validation is a warning once the actual
+                // kernel and libvirt agree on confinement. Runtime checks and
+                // per-VM hook enforcement remain mandatory.
                 CheckStatus::Warn
             } else {
                 CheckStatus::Fail
             }, name: "port readiness".to_owned(),
-            detail: if matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro) {
-                "Rolling target recognized. Stock Arch libvirt disables AppArmor/SELinux drivers; a compatible confined libvirt build is required. Manjaro capabilities must be checked separately; firewall integration and live VM validation remain pending.".to_owned()
+            detail: if matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro | Distribution::Cachyos) {
+                "Rolling target recognized. Stock Arch libvirt disables AppArmor/SELinux drivers; a compatible confined libvirt build is required. Manjaro/CachyOS capabilities must be checked separately; firewall integration and live VM validation remain pending.".to_owned()
             } else if matches!(host.os.distribution, Distribution::Void | Distribution::Nixos | Distribution::Alma | Distribution::Rocky | Distribution::Mint | Distribution::Zorin) {
                 "Experimental port: native dependency resolution, security confinement and physical start/stop validation are pending; run all host checks before preparing guests.".to_owned()
             } else {
                 "Standard mode was exercised on Pop!_OS 24.04 with AppArmor, Boxes and Whonix; firewall integration across distributions and dedicated A/B hardware validation remain pending.".to_owned()
             },
-            fix: matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro).then(|| "Use an AppArmor-enabled libvirt build with virt-aa-helper profiles; inspect virsh capabilities before setup.".to_owned()),
+            fix: matches!(host.os.distribution, Distribution::Arch | Distribution::Manjaro | Distribution::Cachyos).then(|| "Use an AppArmor-enabled libvirt build with virt-aa-helper profiles; inspect virsh capabilities before setup.".to_owned()),
         });
     }
     checks
@@ -886,7 +892,7 @@ mod tests {
 
     #[test]
     fn port_targets_are_recognized_but_not_falsely_ready() {
-        for id in ["debian", "ubuntu", "pop", "arch", "manjaro"] {
+        for id in ["debian", "ubuntu", "pop", "arch", "manjaro", "cachyos"] {
             let host = snapshot(&format!("ID={id}\nVERSION_ID=24.04"));
             let checks = host_checks(&host);
             assert_eq!(checks[0].status, CheckStatus::Ok);
@@ -898,15 +904,39 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 readiness.status,
-                if id == "pop" {
+                if matches!(id, "pop" | "arch" | "manjaro" | "cachyos") {
                     CheckStatus::Warn
                 } else {
                     CheckStatus::Fail
                 }
             );
-            assert_eq!(report.ok(), id == "pop");
+            assert_eq!(
+                report.ok(),
+                matches!(id, "pop" | "arch" | "manjaro" | "cachyos")
+            );
             assert!(format_report(&report).contains("firewall integration"));
         }
+    }
+
+    #[test]
+    fn rolling_readiness_requires_kernel_and_libvirt_confinement() {
+        let mut host = snapshot("ID=cachyos\nID_LIKE=arch");
+        host.security.selinux = SecurityState::Disabled;
+        host.security.apparmor = SecurityState::Enabled;
+        host.security.advertised_models = vec!["apparmor".to_owned()];
+        let readiness = |h: &Host| {
+            host_checks(h)
+                .into_iter()
+                .find(|c| c.name == "port readiness")
+                .unwrap()
+                .status
+        };
+        assert_eq!(readiness(&host), CheckStatus::Warn);
+        host.security.apparmor = SecurityState::Disabled;
+        assert_eq!(readiness(&host), CheckStatus::Fail);
+        host.security.apparmor = SecurityState::Enabled;
+        host.security.advertised_models.clear();
+        assert_eq!(readiness(&host), CheckStatus::Fail);
     }
 
     #[test]

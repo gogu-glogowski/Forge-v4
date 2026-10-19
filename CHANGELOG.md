@@ -1,3 +1,32 @@
+# 4.2.2 — Arch installer (native validation in progress)
+
+- Full Arch-family installation: checked prerequisites, Standard/Extended choice,
+  all automatic image downloads and verification, matching network/hook setup,
+  four stopped VMs and final role/doctor checks.
+- Separate `prepare --images-only` stage leaves hooks and VM definitions untouched.
+- Extended is the installer name for Dedicated A/B; IPv4 and IPv6 host routes
+  are checked again after downloads and before taking USB B.
+- Resumable restart boundary after host prerequisites; installed `forge-install`
+  includes matching installer sources. Python is an explicit package dependency.
+- SIFT stays available for manual import, outside automatic installation.
+- Arch package release 5 fixes the AppArmor capability XML path and requires the
+  virt-aa-helper profile on disk, including after a libvirt package replacement.
+- Dependency setup upgrades the system and explicitly installs only missing
+  dependencies; it no longer downgrades a newer local confined libvirt by naming
+  every already-satisfied dependency as a pacman install target.
+- Host-stage and builder package paths follow the canonical PKGBUILD release.
+- Native CachyOS image reuse/verification passed for all four bases. Guest
+  lifecycle and physical A/B isolation validation remain pending.
+
+# 4.2.1 — installer candidate
+
+- Single `install.sh` entry point; offline plan by default.
+- Standard/Dedicated policy summary, image selection and final confirmation.
+- `forge prepare --profiles kali,whonix` reuses verified, resumable preparation.
+- Whonix remains an inseparable Gateway/Workstation pair.
+- Installer refuses older binaries without profile selection before network changes.
+- Host deployment and physical A/B validation remain separate from local tests.
+
 # Changelog
 
 ## Unreleased — physical installation lab and experimental ports
